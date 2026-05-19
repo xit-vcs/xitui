@@ -10,6 +10,22 @@ pub const Grid = struct {
 
     pub const Cell = struct {
         rune: ?[]const u8,
+
+        pub fn eql(self: Cell, other: Cell) bool {
+            if (self.rune) |rune| {
+                if (other.rune) |other_rune| {
+                    return std.mem.eql(u8, rune, other_rune);
+                } else {
+                    return false;
+                }
+            } else {
+                if (other.rune) |_| {
+                    return false;
+                } else {
+                    return true;
+                }
+            }
+        }
     };
     pub const Cells = NDSlice(Cell, 2, .row_major);
 

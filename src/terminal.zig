@@ -654,11 +654,11 @@ pub const Terminal = struct {
         }
     }
 
-    pub fn render(self: *Terminal, root_widget: anytype, last_grid: *grd.Grid, last_size: *Size) !void {
+    pub fn render(self: *Terminal, root_widget: anytype, last_grid: *grd.Grid, last_size: *Size) !bool {
         self.size = self.getSize() catch |err| {
             // ignore error if terminal is quitting (SIGINT was sent)
             if (quit.load(.monotonic)) {
-                return;
+                return true;
             } else {
                 return err;
             }
@@ -666,7 +666,7 @@ pub const Terminal = struct {
 
         const root_size = Size{ .width = self.size.width, .height = self.size.height };
         if (root_size.width == 0 or root_size.height == 0) {
-            return;
+            return false;
         }
 
         // determine if the grid must be refreshed
@@ -678,6 +678,8 @@ pub const Terminal = struct {
                 force_refresh = true;
             }
         }
+
+        var grid_changed = force_refresh;
 
         if (force_refresh) {
             // rebuild the root widget
@@ -705,8 +707,14 @@ pub const Terminal = struct {
                 // clear cells that are in last grid but not current grid
                 for (0..last_grid.size.height) |y| {
                     for (0..last_grid.size.width) |x| {
-                        if (grid.cells.items[try grid.cells.at(.{ y, x })].rune == null) {
+                        const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
+                        if (cell.rune == null) {
                             try self.write(" ", x, y);
+                        }
+
+                        if (!grid_changed) {
+                            const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
+                            grid_changed = !cell.eql(last_cell);
                         }
                     }
                 }
@@ -719,10 +727,18 @@ pub const Terminal = struct {
                         }
                     }
                 }
+
+                // update last_grid if necessary
+                if (grid_changed) {
+                    last_grid.deinit();
+                    last_grid.* = try grd.Grid.initFromGrid(self.core.allocator, grid, grid.size, 0, 0);
+                }
             }
         }
 
         try self.core.writer.interface.flush();
+
+        return grid_changed;
     }
 };
 

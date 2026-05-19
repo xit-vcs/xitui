@@ -44,10 +44,19 @@ pub fn main() !void {
 
     while (!term.quit.load(.monotonic)) {
         // render to tty
-        try terminal.render(&root, &last_grid, &last_size);
+        const grid_changed = try terminal.render(&root, &last_grid, &last_size);
 
         // process any inputs
-        var blocking = true;
+        //
+        // if the grid didn't change, then first do a blocking
+        // read, so the thread will sleep until further input.
+        // after that, all remaining reads are non-blocking so
+        // we can process the rest of the queued inputs.
+        //
+        // if the grid *did* change, then only do non-blocking
+        // reads. we do not want to sleep the thread because
+        // there may be an animation that requires more looping.
+        var blocking = !grid_changed;
         while (try terminal.readKey(io, blocking)) |key| {
             switch (key) {
                 .codepoint => |cp| if (cp == 'q') return,
