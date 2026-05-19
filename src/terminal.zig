@@ -6,7 +6,8 @@ const grd = @import("./grid.zig");
 
 const write_buffer_size = 4096;
 
-pub var quit = false;
+pub var quit = std.atomic.Value(bool).init(false);
+var resized = std.atomic.Value(bool).init(false);
 
 pub const Core = switch (builtin.os.tag) {
     .windows => struct {
@@ -150,6 +151,7 @@ pub const Core = switch (builtin.os.tag) {
         pub const WAIT_OBJECT_0 = 0x00000000;
         pub const WAIT_TIMEOUT = 0x00000102;
         pub const WAIT_FAILED = 0xFFFFFFFF;
+        pub const INFINITE = 0xFFFFFFFF;
 
         pub fn waitForSingleObjectEx(handle: std.os.windows.HANDLE, milliseconds: std.os.windows.DWORD, alertable: bool) WaitForSingleObjectError!void {
             switch (WaitForSingleObjectEx(handle, milliseconds, if (alertable) .TRUE else .FALSE)) {
@@ -242,13 +244,15 @@ pub const Core = switch (builtin.os.tag) {
             _ = SetConsoleMode(out_handle, self.tty.old_out_mode);
         }
 
-        fn readKey(_: *Core, _: std.Io) !?inp.Key {
+        fn readKey(_: *Core, _: std.Io, blocking: bool) !?inp.Key {
+            const timeout: std.os.windows.DWORD = if (blocking) INFINITE else 0;
+
             while (true) {
                 const in_handle = std.Io.File.stdin().handle;
                 var event_buffer: [1]INPUT_RECORD = undefined;
                 var num_events_read: std.os.windows.DWORD = undefined;
                 // exit early if there is no event ready to read
-                waitForSingleObject(in_handle, 0) catch |err| switch (err) {
+                waitForSingleObject(in_handle, timeout) catch |err| switch (err) {
                     error.WaitAbandoned => return null,
                     error.WaitTimeOut => return null,
                     error.Unexpected => |e| return e,
@@ -291,7 +295,7 @@ pub const Core = switch (builtin.os.tag) {
                     // MOUSE_EVENT
                     0x0002 => {},
                     // WINDOW_BUFFER_SIZE_EVENT
-                    0x0004 => {},
+                    0x0004 => return .{ .event = .resize },
                     // MENU_EVENT
                     0x0008 => {},
                     // FOCUS_EVENT
@@ -413,45 +417,61 @@ pub const Core = switch (builtin.os.tag) {
             return null;
         }
 
-        fn readKey(self: *Core, io: std.Io) !?inp.Key {
-            defer self.esc_buffer.clearRetainingCapacity();
+        fn readKey(self: *Core, io: std.Io, blocking: bool) !?inp.Key {
+            if (blocking) {
+                // the tty is in raw mode with VMIN=0, VTIME=1, so each
+                // non-blocking read already blocks for up to 100 ms. loop on
+                // it until a key arrives, the terminal resizes, or we quit.
+                while (!quit.load(.monotonic)) {
+                    if (resized.swap(false, .monotonic)) return .{ .event = .resize };
+                    if (try self.readKey(io, false)) |key| return key;
+                }
 
-            // if there is any key in the queue, return it
-            if (self.key_queue.popFirst()) |node| {
-                const key_and_node: *KeyAndNode = @fieldParentPtr("node", node);
-                const key = key_and_node.key;
-                self.allocator.destroy(key_and_node);
-                return key;
-            }
+                return null;
+            } else {
+                if (resized.swap(false, .monotonic)) {
+                    return .{ .event = .resize };
+                }
 
-            const buffer_size = 32;
-            var buffer: [buffer_size]u8 = undefined;
-            const size = self.tty.readStreaming(io, &.{&buffer}) catch |err| switch (err) {
-                error.EndOfStream => return null,
-                else => |e| return e,
-            };
-            var key_maybe: ?inp.Key = null;
+                defer self.esc_buffer.clearRetainingCapacity();
 
-            if (size > 0) {
-                const text = std.unicode.Utf8View.init(buffer[0..size]) catch return null;
-                var iter = text.iterator();
-                while (iter.nextCodepoint()) |codepoint| {
-                    const next_bytes = iter.peek(1);
-                    if (try self.initKey(codepoint, if (next_bytes.len == 1) next_bytes[0] else null)) |key| {
-                        if (key_maybe == null) {
-                            key_maybe = key;
-                        } else {
-                            var key_and_node = try self.allocator.create(KeyAndNode);
-                            errdefer self.allocator.free(key_and_node);
-                            key_and_node.key = key;
-                            key_and_node.node = .{};
-                            self.key_queue.append(&key_and_node.node);
+                // if there is any key in the queue, return it
+                if (self.key_queue.popFirst()) |node| {
+                    const key_and_node: *KeyAndNode = @fieldParentPtr("node", node);
+                    const key = key_and_node.key;
+                    self.allocator.destroy(key_and_node);
+                    return key;
+                }
+
+                const buffer_size = 32;
+                var buffer: [buffer_size]u8 = undefined;
+                const size = self.tty.readStreaming(io, &.{&buffer}) catch |err| switch (err) {
+                    error.EndOfStream => return null,
+                    else => |e| return e,
+                };
+                var key_maybe: ?inp.Key = null;
+
+                if (size > 0) {
+                    const text = std.unicode.Utf8View.init(buffer[0..size]) catch return null;
+                    var iter = text.iterator();
+                    while (iter.nextCodepoint()) |codepoint| {
+                        const next_bytes = iter.peek(1);
+                        if (try self.initKey(codepoint, if (next_bytes.len == 1) next_bytes[0] else null)) |key| {
+                            if (key_maybe == null) {
+                                key_maybe = key;
+                            } else {
+                                var key_and_node = try self.allocator.create(KeyAndNode);
+                                errdefer self.allocator.free(key_and_node);
+                                key_and_node.key = key;
+                                key_and_node.node = .{};
+                                self.key_queue.append(&key_and_node.node);
+                            }
                         }
                     }
                 }
-            }
 
-            return key_maybe;
+                return key_maybe;
+            }
         }
     },
 };
@@ -489,7 +509,7 @@ pub const Terminal = struct {
 
                         switch (fdw_ctrl_type) {
                             CTRL_C_EVENT => {
-                                quit = true;
+                                quit.store(true, .monotonic);
                                 return .TRUE;
                             },
                             else => {},
@@ -535,11 +555,22 @@ pub const Terminal = struct {
 
                 const handler = struct {
                     fn run(_: std.posix.SIG) callconv(.c) void {
-                        quit = true;
+                        quit.store(true, .monotonic);
                     }
                 }.run;
                 std.posix.sigaction(std.posix.SIG.INT, &.{
                     .handler = .{ .handler = handler },
+                    .mask = std.posix.sigemptyset(),
+                    .flags = 0,
+                }, null);
+
+                const resize_handler = struct {
+                    fn run(_: std.posix.SIG) callconv(.c) void {
+                        resized.store(true, .monotonic);
+                    }
+                }.run;
+                std.posix.sigaction(std.posix.SIG.WINCH, &.{
+                    .handler = .{ .handler = resize_handler },
                     .mask = std.posix.sigemptyset(),
                     .flags = 0,
                 }, null);
@@ -605,10 +636,10 @@ pub const Terminal = struct {
         }
     }
 
-    pub fn readKey(self: *Terminal, io: std.Io) !?inp.Key {
-        return self.core.readKey(io) catch |err| {
+    pub fn readKey(self: *Terminal, io: std.Io, blocking: bool) !?inp.Key {
+        return self.core.readKey(io, blocking) catch |err| {
             // ignore error if terminal is quitting (SIGINT was sent)
-            if (quit) {
+            if (quit.load(.monotonic)) {
                 return null;
             } else {
                 return err;
@@ -626,7 +657,7 @@ pub const Terminal = struct {
     pub fn render(self: *Terminal, root_widget: anytype, last_grid: *grd.Grid, last_size: *Size) !void {
         self.size = self.getSize() catch |err| {
             // ignore error if terminal is quitting (SIGINT was sent)
-            if (quit) {
+            if (quit.load(.monotonic)) {
                 return;
             } else {
                 return err;

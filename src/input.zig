@@ -9,4 +9,7 @@ pub const Key = union(enum) {
     page_up,
     page_down,
     codepoint: u21,
+    event: enum {
+        resize,
+    },
 };

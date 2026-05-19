@@ -42,17 +42,18 @@ pub fn main() !void {
     var last_grid = try Grid.init(allocator, last_size);
     defer last_grid.deinit();
 
-    while (!term.quit) {
+    while (!term.quit.load(.monotonic)) {
         // render to tty
         try terminal.render(&root, &last_grid, &last_size);
 
         // process any inputs
-        while (try terminal.readKey(io)) |key| {
+        var blocking = true;
+        while (try terminal.readKey(io, blocking)) |key| {
             switch (key) {
                 .codepoint => |cp| if (cp == 'q') return,
-                else => {},
+                else => try root.input(key, root.getFocus()),
             }
-            try root.input(key, root.getFocus());
+            blocking = false;
         }
 
         // rebuild widget
