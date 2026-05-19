@@ -52,7 +52,7 @@ pub const Widget = union(enum) {
 test "text box" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!", .single, .none) };
+    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!", .{ .border_style = .single, .wrap_kind = .none }) };
     defer widget.deinit();
 
     try widget.build(.{
@@ -73,7 +73,7 @@ test "text box" {
 test "text box with wrapping" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!\nGöödbye, world!", .single, .char) };
+    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!\nGöödbye, world!", .{ .border_style = .single, .wrap_kind = .char }) };
     defer widget.deinit();
 
     try widget.build(.{

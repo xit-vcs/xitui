@@ -83,8 +83,7 @@ pub fn Box(comptime Widget: type) type {
         grid: ?Grid,
         allocator: std.mem.Allocator,
         children: std.AutoArrayHashMapUnmanaged(usize, Child),
-        border_style: ?BorderStyle,
-        direction: Direction,
+        options: Options,
 
         pub const Child = struct {
             widget: Widget,
@@ -97,14 +96,19 @@ pub fn Box(comptime Widget: type) type {
             horiz,
         };
 
-        pub fn init(allocator: std.mem.Allocator, border_style: ?BorderStyle, direction: Direction) !Box(Widget) {
+        pub const Options = struct {
+            border_style: ?BorderStyle,
+            rounded_corners: bool = false,
+            direction: Direction,
+        };
+
+        pub fn init(allocator: std.mem.Allocator, options: Options) !Box(Widget) {
             return .{
                 .focus = Focus.init(allocator, .container),
                 .grid = null,
                 .allocator = allocator,
                 .children = .empty,
-                .border_style = border_style,
-                .direction = direction,
+                .options = options,
             };
         }
 
@@ -123,7 +127,7 @@ pub fn Box(comptime Widget: type) type {
         pub fn build(self: *Box(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
 
-            const border_size: usize = if (self.border_style) |_| 1 else 0;
+            const border_size: usize = if (self.options.border_style) |_| 1 else 0;
             if (constraint.max_size.width) |max_width| {
                 if (max_width <= border_size * 2) return;
             }
@@ -232,7 +236,7 @@ pub fn Box(comptime Widget: type) type {
                 }, root_focus);
 
                 if (child.widget.getGrid()) |child_grid| {
-                    switch (self.direction) {
+                    switch (self.options.direction) {
                         .vert => {
                             if (remaining_height_maybe) |*remaining_height| remaining_height.* -|= child_grid.size.height;
                             width = @max(width, child_grid.size.width);
@@ -257,7 +261,7 @@ pub fn Box(comptime Widget: type) type {
 
             self.getFocus().clear();
 
-            switch (self.direction) {
+            switch (self.options.direction) {
                 .vert => {
                     var line: usize = 0;
                     for (self.children.values()) |*child| {
@@ -287,7 +291,7 @@ pub fn Box(comptime Widget: type) type {
             }
 
             // border style
-            if (self.border_style) |border_style| {
+            if (self.options.border_style) |border_style| {
                 const horiz_line = switch (border_style) {
                     .hidden => " ",
                     .single, .single_dashed => "─",
@@ -300,23 +304,23 @@ pub fn Box(comptime Widget: type) type {
                 };
                 const top_left_corner = switch (border_style) {
                     .hidden => " ",
-                    .single, .single_dashed => "┌",
-                    .double, .double_dashed => "╔",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╭" else "┌",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╭" else "╔",
                 };
                 const top_right_corner = switch (border_style) {
                     .hidden => " ",
-                    .single, .single_dashed => "┐",
-                    .double, .double_dashed => "╗",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╮" else "┐",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╮" else "╗",
                 };
                 const bottom_left_corner = switch (border_style) {
                     .hidden => " ",
-                    .single, .single_dashed => "└",
-                    .double, .double_dashed => "╚",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╰" else "└",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╰" else "╚",
                 };
                 const bottom_right_corner = switch (border_style) {
                     .hidden => " ",
-                    .single, .single_dashed => "┘",
-                    .double, .double_dashed => "╝",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╯" else "┘",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╯" else "╝",
                 };
                 // top and bottom border
                 for (1..grid.size.width - 1) |x| {
@@ -373,17 +377,21 @@ pub fn TextBox(comptime Widget: type) type {
     return struct {
         allocator: std.mem.Allocator,
         box: Box(Widget),
-        border_style: ?BorderStyle,
-        wrap_kind: WrapKind,
+        options: Options,
         last_wrap_width: ?usize,
         content: []const u8,
         lines: std.ArrayList([]const u8),
 
+        pub const Options = struct {
+            border_style: ?BorderStyle,
+            rounded_corners: bool = false,
+            wrap_kind: WrapKind,
+        };
+
         pub fn init(
             allocator: std.mem.Allocator,
             content: []const u8,
-            border_style: ?BorderStyle,
-            wrap_kind: WrapKind,
+            options: Options,
         ) !TextBox(Widget) {
             var lines: std.ArrayList([]const u8) = .empty;
             errdefer {
@@ -408,7 +416,7 @@ pub fn TextBox(comptime Widget: type) type {
                 try lines.append(allocator, try line.toOwnedSlice(allocator));
             }
 
-            var box = try Box(Widget).init(allocator, border_style, .vert);
+            var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert });
             errdefer box.deinit();
             box.getFocus().kind = .text_box;
             for (lines.items) |line| {
@@ -420,8 +428,7 @@ pub fn TextBox(comptime Widget: type) type {
             return .{
                 .allocator = allocator,
                 .box = box,
-                .border_style = border_style,
-                .wrap_kind = wrap_kind,
+                .options = options,
                 .last_wrap_width = null,
                 .content = content,
                 .lines = lines,
@@ -437,13 +444,13 @@ pub fn TextBox(comptime Widget: type) type {
         }
 
         pub fn build(self: *TextBox(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
-            if (.char == self.wrap_kind) {
+            if (.char == self.options.wrap_kind) {
                 if (constraint.max_size.width) |max_width| {
                     const should_rewrap = if (self.last_wrap_width) |last_wrap_width| last_wrap_width != max_width else true;
                     self.last_wrap_width = max_width;
 
                     if (should_rewrap) {
-                        const border_size: usize = if (self.border_style) |_| 1 else 0;
+                        const border_size: usize = if (self.options.border_style) |_| 1 else 0;
 
                         {
                             for (self.lines.items) |line| {
@@ -470,7 +477,7 @@ pub fn TextBox(comptime Widget: type) type {
                             }
                         }
 
-                        const box = try Box(Widget).init(self.allocator, self.border_style, .vert);
+                        const box = try Box(Widget).init(self.allocator, .{ .border_style = self.options.border_style, .rounded_corners = self.options.rounded_corners, .direction = .vert });
                         self.box.deinit();
                         self.box = box;
                         for (self.lines.items) |line| {
@@ -483,7 +490,8 @@ pub fn TextBox(comptime Widget: type) type {
             }
 
             self.clearGrid();
-            self.box.border_style = self.border_style;
+            self.box.options.border_style = self.options.border_style;
+            self.box.options.rounded_corners = self.options.rounded_corners;
             try self.box.build(constraint, root_focus);
         }
 
