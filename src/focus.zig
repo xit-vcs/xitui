@@ -68,6 +68,13 @@ pub const Focus = struct {
             if (child.focus.focusable) {
                 break;
             } else if (child.focus.child_id) |next_child_id| {
+                // stop descending if the next id isn't in our focus tree
+                // (e.g. the target child wasn't laid out this build, or its
+                // descendants were just replaced and haven't been re-added).
+                // without this guard we'd commit to a dead-end id and the
+                // walk-up below would silently no-op, leaving ancestor
+                // child_id values pointing at the previous focus.
+                if (!self.children.contains(next_child_id)) break;
                 id = next_child_id;
             } else {
                 return;
