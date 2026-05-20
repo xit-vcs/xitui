@@ -1,5 +1,4 @@
 const std = @import("std");
-const runtime_safety = std.debug.runtime_safety;
 const mem = std.mem;
 
 const NDSliceErrors = error{
@@ -43,10 +42,8 @@ pub fn NDSlice(comptime T: type, comptime N: comptime_int, comptime order_val: M
 
         // computes the linear index of an element
         pub fn at(self: Self, index: [N]usize) !usize {
-            if (runtime_safety) {
-                for (index, 0..) |index_i, i| {
-                    if (index_i >= self.shape[i]) return NDSliceErrors.IndexOutOfBounds;
-                }
+            for (index, 0..) |index_i, i| {
+                if (index_i >= self.shape[i]) return NDSliceErrors.IndexOutOfBounds;
             }
 
             return switch (order) {
