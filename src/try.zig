@@ -60,6 +60,25 @@ pub fn main() !void {
         while (try terminal.readKey(io, blocking)) |key| {
             switch (key) {
                 .codepoint => |cp| if (cp == 'q') return,
+                .mouse => |mouse| {
+                    if (mouse.action == .press and mouse.action.press == .left) {
+                        const root_focus = root.getFocus();
+                        var iter = root_focus.children.iterator();
+                        while (iter.next()) |entry| {
+                            const child = entry.value_ptr.*;
+                            if (!child.focus.focusable) continue;
+                            const r = child.rect;
+                            if (mouse.x >= r.x and mouse.y >= r.y and
+                                mouse.x < r.x + r.size.width and mouse.y < r.y + r.size.height)
+                            {
+                                try root_focus.setFocus(entry.key_ptr.*);
+                                break;
+                            }
+                        }
+                    } else {
+                        try root.input(key, root.getFocus());
+                    }
+                },
                 else => try root.input(key, root.getFocus()),
             }
             blocking = false;
@@ -106,6 +125,34 @@ const WidgetList = struct {
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "this is a\nmulti-line TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            errdefer text_box.deinit();
+            text_box.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
+        }
+
+        {
+            var text_box = try wgt.TextBox(Widget).init(allocator, "another TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            errdefer text_box.deinit();
+            text_box.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
+        }
+
+        {
+            var text_box = try wgt.TextBox(Widget).init(allocator, "also a TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            errdefer text_box.deinit();
+            text_box.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
+        }
+
+        {
+            var text_box = try wgt.TextBox(Widget).init(allocator, "yet another TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            errdefer text_box.deinit();
+            text_box.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
+        }
+
+        {
+            var text_box = try wgt.TextBox(Widget).init(allocator, "one more TextBox", .{ .border_style = .single, .wrap_kind = .none });
             errdefer text_box.deinit();
             text_box.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
@@ -170,6 +217,15 @@ const WidgetList = struct {
                                 index = @min(index + half_count, children.count() - 1);
                             }
                         }
+                    },
+                    .mouse => |mouse| switch (mouse.action) {
+                        .scroll => |dir| switch (dir) {
+                            .up => index -|= 1,
+                            .down => if (index + 1 < children.count()) {
+                                index += 1;
+                            },
+                        },
+                        else => {},
                     },
                     else => {},
                 }

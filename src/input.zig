@@ -9,7 +9,31 @@ pub const Key = union(enum) {
     page_up,
     page_down,
     codepoint: u21,
+    mouse: Mouse,
     event: enum {
         resize,
     },
+};
+
+pub const Mouse = struct {
+    x: usize,
+    y: usize,
+    action: MouseAction,
+};
+
+pub const MouseAction = union(enum) {
+    press: MouseButton,
+    release: MouseButton,
+    scroll: ScrollDirection,
+};
+
+pub const MouseButton = enum {
+    left,
+    middle,
+    right,
+};
+
+pub const ScrollDirection = enum {
+    up,
+    down,
 };

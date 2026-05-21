@@ -15,6 +15,7 @@ pub const Core = switch (builtin.os.tag) {
         write_buffer: []u8,
         writer: Tty.Writer,
         allocator: std.mem.Allocator,
+        last_mouse_buttons: std.os.windows.DWORD,
 
         pub const KEY_EVENT_RECORD = extern struct {
             bKeyDown: std.os.windows.BOOL,
@@ -167,6 +168,7 @@ pub const Core = switch (builtin.os.tag) {
 
         pub const Tty = struct {
             old_out_mode: std.os.windows.DWORD,
+            old_in_mode: std.os.windows.DWORD,
 
             pub const Writer = struct {
                 interface: std.Io.Writer,
@@ -225,7 +227,23 @@ pub const Core = switch (builtin.os.tag) {
             if (SetConsoleMode(out_handle, new_out_mode) == .FALSE) {
                 return error.FailedToSetConsoleMode;
             }
-            errdefer self.cook() catch {};
+            errdefer _ = SetConsoleMode(out_handle, self.tty.old_out_mode);
+
+            const in_handle = std.Io.File.stdin().handle;
+            if (GetConsoleMode(in_handle, &self.tty.old_in_mode) == .FALSE) {
+                return error.FailedToGetConsoleMode;
+            }
+            const ENABLE_WINDOW_INPUT: std.os.windows.DWORD = 0x0008;
+            const ENABLE_MOUSE_INPUT: std.os.windows.DWORD = 0x0010;
+            const ENABLE_QUICK_EDIT_MODE: std.os.windows.DWORD = 0x0040;
+            const ENABLE_EXTENDED_FLAGS: std.os.windows.DWORD = 0x0080;
+            // ENABLE_EXTENDED_FLAGS is required for ENABLE_QUICK_EDIT_MODE to
+            // take effect; quick edit mode would otherwise swallow mouse events.
+            const new_in_mode = (self.tty.old_in_mode | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT) & ~ENABLE_QUICK_EDIT_MODE;
+            if (SetConsoleMode(in_handle, new_in_mode) == .FALSE) {
+                return error.FailedToSetConsoleMode;
+            }
+            errdefer _ = SetConsoleMode(in_handle, self.tty.old_in_mode);
 
             try hideCursor(&self.writer.interface);
             try enterAlt(&self.writer.interface);
@@ -242,9 +260,11 @@ pub const Core = switch (builtin.os.tag) {
 
             const out_handle = std.Io.File.stdout().handle;
             _ = SetConsoleMode(out_handle, self.tty.old_out_mode);
+            const in_handle = std.Io.File.stdin().handle;
+            _ = SetConsoleMode(in_handle, self.tty.old_in_mode);
         }
 
-        fn readKey(_: *Core, _: std.Io, blocking: bool) !?inp.Key {
+        fn readKey(self: *Core, _: std.Io, blocking: bool) !?inp.Key {
             const timeout: std.os.windows.DWORD = if (blocking) INFINITE else 0;
 
             while (true) {
@@ -293,7 +313,64 @@ pub const Core = switch (builtin.os.tag) {
                         }
                     },
                     // MOUSE_EVENT
-                    0x0002 => {},
+                    0x0002 => {
+                        const mouse_event = event.MouseEvent;
+                        const raw_x = mouse_event.dwMousePosition.X;
+                        const raw_y = mouse_event.dwMousePosition.Y;
+                        if (raw_x < 0 or raw_y < 0) continue;
+                        const x: usize = @intCast(raw_x);
+                        const y: usize = @intCast(raw_y);
+
+                        const MOUSE_MOVED: std.os.windows.DWORD = 0x0001;
+                        const MOUSE_WHEELED: std.os.windows.DWORD = 0x0004;
+
+                        if (mouse_event.dwEventFlags & MOUSE_WHEELED != 0) {
+                            // high word of dwButtonState is a signed scroll
+                            // delta — positive means away from the user (up)
+                            const delta: i16 = @bitCast(@as(u16, @truncate(mouse_event.dwButtonState >> 16)));
+                            return .{ .mouse = .{
+                                .x = x,
+                                .y = y,
+                                .action = .{ .scroll = if (delta > 0) .up else .down },
+                            } };
+                        }
+
+                        // ignore pure-motion events (no button state change)
+                        if (mouse_event.dwEventFlags & MOUSE_MOVED != 0) {
+                            self.last_mouse_buttons = mouse_event.dwButtonState;
+                            continue;
+                        }
+
+                        // detect press/release by diffing button bitmask
+                        const buttons = mouse_event.dwButtonState;
+                        const pressed = buttons & ~self.last_mouse_buttons;
+                        const released = self.last_mouse_buttons & ~buttons;
+                        self.last_mouse_buttons = buttons;
+
+                        const FROM_LEFT_1ST: std.os.windows.DWORD = 0x0001;
+                        const RIGHTMOST: std.os.windows.DWORD = 0x0002;
+                        const FROM_LEFT_2ND: std.os.windows.DWORD = 0x0004;
+
+                        const press_button: ?inp.MouseButton =
+                            if (pressed & FROM_LEFT_1ST != 0) .left
+                            else if (pressed & FROM_LEFT_2ND != 0) .middle
+                            else if (pressed & RIGHTMOST != 0) .right
+                            else null;
+                        if (press_button) |b| {
+                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .press = b } } };
+                        }
+
+                        const release_button: ?inp.MouseButton =
+                            if (released & FROM_LEFT_1ST != 0) .left
+                            else if (released & FROM_LEFT_2ND != 0) .middle
+                            else if (released & RIGHTMOST != 0) .right
+                            else null;
+                        if (release_button) |b| {
+                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .release = b } } };
+                        }
+
+                        continue;
+                    },
                     // WINDOW_BUFFER_SIZE_EVENT
                     0x0004 => return .{ .event = .resize },
                     // MENU_EVENT
@@ -325,7 +402,11 @@ pub const Core = switch (builtin.os.tag) {
             errdefer self.cook() catch {};
 
             self.raw = self.cooked_termios;
-            self.raw.lflag = .{ .ECHO = true, .ISIG = true, .IEXTEN = true };
+            // ECHO must stay off: with it on the terminal echoes input bytes
+            // back, and SGR mouse release sequences (which end in lowercase
+            // 'm') get interpreted as Select Graphic Rendition — clicking
+            // at column 31 would turn text red, etc.
+            self.raw.lflag = .{ .ISIG = true, .IEXTEN = true };
             self.raw.iflag = .{ .ICRNL = true, .IUTF8 = true };
             self.raw.oflag = .{ .OPOST = true };
             self.raw.cflag.CSIZE = .CS8;
@@ -336,10 +417,12 @@ pub const Core = switch (builtin.os.tag) {
             try hideCursor(&self.writer.interface);
             try enterAlt(&self.writer.interface);
             try clearStyle(&self.writer.interface);
+            try enableMouse(&self.writer.interface);
             try self.writer.interface.flush();
         }
 
         fn cook(self: *Core) !void {
+            try disableMouse(&self.writer.interface);
             try clearStyle(&self.writer.interface);
             try leaveAlt(&self.writer.interface);
             try showCursor(&self.writer.interface);
@@ -378,6 +461,7 @@ pub const Core = switch (builtin.os.tag) {
                             'D' => .arrow_left,
                             'F' => .end,
                             'H' => .home,
+                            'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
                             '~' => blk: {
                                 var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
                                 const code = codes.first();
@@ -485,6 +569,7 @@ pub const Terminal = struct {
             .windows => {
                 const tty = Core.Tty{
                     .old_out_mode = undefined,
+                    .old_in_mode = undefined,
                 };
 
                 const write_buffer = try allocator.alloc(u8, write_buffer_size);
@@ -496,6 +581,7 @@ pub const Terminal = struct {
                         .write_buffer = write_buffer,
                         .writer = tty.writer(write_buffer),
                         .allocator = allocator,
+                        .last_mouse_buttons = 0,
                     },
                     .size = .{ .width = 0, .height = 0 },
                 };
@@ -776,6 +862,53 @@ pub fn blueBackground(writer: *std.Io.Writer) !void {
 
 pub fn clearStyle(writer: *std.Io.Writer) !void {
     try writer.writeAll("\x1B[2J");
+}
+
+pub fn enableMouse(writer: *std.Io.Writer) !void {
+    try writer.writeAll("\x1B[?1000h"); // button-event tracking
+    try writer.writeAll("\x1B[?1006h"); // SGR extended coordinates
+}
+
+pub fn disableMouse(writer: *std.Io.Writer) !void {
+    try writer.writeAll("\x1B[?1006l");
+    try writer.writeAll("\x1B[?1000l");
+}
+
+fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
+    // buffer at this point looks like: ESC '[' '<' Cb ';' Cx ';' Cy
+    if (buffer.len < 4) return null;
+    if (buffer[0] != '\x1B' or buffer[1] != '[' or buffer[2] != '<') return null;
+
+    var parts = std.mem.splitScalar(u8, buffer[3..], ';');
+    const cb_str = parts.next() orelse return null;
+    const cx_str = parts.next() orelse return null;
+    const cy_str = parts.next() orelse return null;
+
+    const cb = std.fmt.parseInt(u16, cb_str, 10) catch return null;
+    const cx = std.fmt.parseInt(usize, cx_str, 10) catch return null;
+    const cy = std.fmt.parseInt(usize, cy_str, 10) catch return null;
+
+    const x: usize = if (cx > 0) cx - 1 else 0;
+    const y: usize = if (cy > 0) cy - 1 else 0;
+
+    // bit 6 (0x40) flags a wheel event; lower bit is direction
+    if (cb & 0x40 != 0) {
+        const dir: inp.ScrollDirection = if (cb & 0x01 == 0) .up else .down;
+        return .{ .mouse = .{ .x = x, .y = y, .action = .{ .scroll = dir } } };
+    }
+
+    const button: inp.MouseButton = switch (cb & 0x03) {
+        0 => .left,
+        1 => .middle,
+        2 => .right,
+        // 3 means "no button" (motion-release in legacy mode); ignore
+        else => return null,
+    };
+    return .{ .mouse = .{
+        .x = x,
+        .y = y,
+        .action = if (press) .{ .press = button } else .{ .release = button },
+    } };
 }
 
 pub fn clearRect(writer: *std.Io.Writer, x: usize, y: usize, size: Size) !void {
