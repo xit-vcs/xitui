@@ -352,19 +352,13 @@ pub const Core = switch (builtin.os.tag) {
                         const FROM_LEFT_2ND: std.os.windows.DWORD = 0x0004;
 
                         const press_button: ?inp.MouseButton =
-                            if (pressed & FROM_LEFT_1ST != 0) .left
-                            else if (pressed & FROM_LEFT_2ND != 0) .middle
-                            else if (pressed & RIGHTMOST != 0) .right
-                            else null;
+                            if (pressed & FROM_LEFT_1ST != 0) .left else if (pressed & FROM_LEFT_2ND != 0) .middle else if (pressed & RIGHTMOST != 0) .right else null;
                         if (press_button) |b| {
                             return .{ .mouse = .{ .x = x, .y = y, .action = .{ .press = b } } };
                         }
 
                         const release_button: ?inp.MouseButton =
-                            if (released & FROM_LEFT_1ST != 0) .left
-                            else if (released & FROM_LEFT_2ND != 0) .middle
-                            else if (released & RIGHTMOST != 0) .right
-                            else null;
+                            if (released & FROM_LEFT_1ST != 0) .left else if (released & FROM_LEFT_2ND != 0) .middle else if (released & RIGHTMOST != 0) .right else null;
                         if (release_button) |b| {
                             return .{ .mouse = .{ .x = x, .y = y, .action = .{ .release = b } } };
                         }
@@ -389,13 +383,7 @@ pub const Core = switch (builtin.os.tag) {
         allocator: std.mem.Allocator,
         cooked_termios: std.posix.termios,
         raw: std.posix.termios,
-        esc_buffer: std.ArrayList(u8),
-        key_queue: std.DoublyLinkedList,
-
-        const KeyAndNode = struct {
-            key: inp.Key,
-            node: std.DoublyLinkedList.Node,
-        };
+        parser: EscapeParser,
 
         fn uncook(self: *Core) !void {
             self.cooked_termios = try std.posix.tcgetattr(self.tty.handle);
@@ -432,75 +420,6 @@ pub const Core = switch (builtin.os.tag) {
             try std.posix.tcsetattr(self.tty.handle, .FLUSH, self.cooked_termios);
         }
 
-        fn initKey(self: *Core, codepoint: u21, next_byte_maybe: ?u8) !?inp.Key {
-            const esc_len = self.esc_buffer.items.len;
-
-            // sanity check
-            if (esc_len == self.esc_buffer.capacity) {
-                return error.EscCodeAtCapacity;
-            }
-            // we are in an esc sequence
-            else if (esc_len > 0) {
-                // esc sequences should be ascii-only
-                const byte: u8 = std.math.cast(u8, codepoint) orelse return null;
-
-                // the character after esc is part of the sequence and doesn't need to be looked at
-                if (esc_len == 1) {
-                    self.esc_buffer.appendAssumeCapacity(byte);
-                    return null;
-                }
-
-                // return key or add byte to esc sequence
-                switch (byte) {
-                    // chars that terminate the sequence
-                    0x40...0x7E => {
-                        const key: inp.Key = switch (byte) {
-                            'A' => .arrow_up,
-                            'B' => .arrow_down,
-                            'C' => .arrow_right,
-                            'D' => .arrow_left,
-                            'F' => .end,
-                            'H' => .home,
-                            'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
-                            '~' => blk: {
-                                var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
-                                const code = codes.first();
-                                break :blk if (std.mem.eql(u8, code, "1"))
-                                    .home
-                                else if (std.mem.eql(u8, code, "4"))
-                                    .end
-                                else if (std.mem.eql(u8, code, "5"))
-                                    .page_up
-                                else if (std.mem.eql(u8, code, "6"))
-                                    .page_down
-                                else
-                                    .unknown;
-                            },
-                            else => .unknown,
-                        };
-                        self.esc_buffer.clearRetainingCapacity();
-                        return key;
-                    },
-                    // add all other chars to the esc sequence
-                    else => self.esc_buffer.appendAssumeCapacity(byte),
-                }
-            }
-            // we are not in an esc sequence
-            else {
-                if ('\x1B' == codepoint) {
-                    if (next_byte_maybe) |next_byte| {
-                        // sequence must start with [
-                        if (next_byte == '[') {
-                            self.esc_buffer.appendAssumeCapacity('\x1B');
-                            return null;
-                        }
-                    }
-                }
-                return .{ .codepoint = codepoint };
-            }
-            return null;
-        }
-
         fn readKey(self: *Core, io: std.Io, blocking: bool) !?inp.Key {
             if (blocking) {
                 // the tty is in raw mode with VMIN=0, VTIME=1, so each
@@ -517,15 +436,9 @@ pub const Core = switch (builtin.os.tag) {
                     return .{ .event = .resize };
                 }
 
-                defer self.esc_buffer.clearRetainingCapacity();
+                defer self.parser.clearScratch();
 
-                // if there is any key in the queue, return it
-                if (self.key_queue.popFirst()) |node| {
-                    const key_and_node: *KeyAndNode = @fieldParentPtr("node", node);
-                    const key = key_and_node.key;
-                    self.allocator.destroy(key_and_node);
-                    return key;
-                }
+                if (self.parser.popQueued()) |key| return key;
 
                 const buffer_size = 32;
                 var buffer: [buffer_size]u8 = undefined;
@@ -533,28 +446,9 @@ pub const Core = switch (builtin.os.tag) {
                     error.EndOfStream => return null,
                     else => |e| return e,
                 };
-                var key_maybe: ?inp.Key = null;
+                if (size == 0) return null;
 
-                if (size > 0) {
-                    const text = std.unicode.Utf8View.init(buffer[0..size]) catch return null;
-                    var iter = text.iterator();
-                    while (iter.nextCodepoint()) |codepoint| {
-                        const next_bytes = iter.peek(1);
-                        if (try self.initKey(codepoint, if (next_bytes.len == 1) next_bytes[0] else null)) |key| {
-                            if (key_maybe == null) {
-                                key_maybe = key;
-                            } else {
-                                var key_and_node = try self.allocator.create(KeyAndNode);
-                                errdefer self.allocator.free(key_and_node);
-                                key_and_node.key = key;
-                                key_and_node.node = .{};
-                                self.key_queue.append(&key_and_node.node);
-                            }
-                        }
-                    }
-                }
-
-                return key_maybe;
+                return try self.parser.writeBytes(buffer[0..size]);
             }
         }
     },
@@ -615,9 +509,8 @@ pub const Terminal = struct {
                 var tty = try std.Io.Dir.cwd().openFile(io, "/dev/tty", .{ .mode = .read_write });
                 errdefer tty.close(io);
 
-                // just needs to be able to hold the largest possible escape code
-                var esc_buffer = try std.ArrayList(u8).initCapacity(allocator, 32);
-                errdefer esc_buffer.deinit(allocator);
+                var parser = try EscapeParser.init(allocator);
+                errdefer parser.deinit();
 
                 const write_buffer = try allocator.alloc(u8, write_buffer_size);
                 errdefer allocator.free(write_buffer);
@@ -630,8 +523,7 @@ pub const Terminal = struct {
                         .allocator = allocator,
                         .cooked_termios = undefined,
                         .raw = undefined,
-                        .esc_buffer = esc_buffer,
-                        .key_queue = std.DoublyLinkedList{},
+                        .parser = parser,
                     },
                     .size = .{ .width = 0, .height = 0 },
                 };
@@ -681,12 +573,8 @@ pub const Terminal = struct {
             },
             else => {
                 self.core.cook() catch {};
-                self.core.esc_buffer.deinit(self.core.allocator);
+                self.core.parser.deinit();
                 self.core.allocator.free(self.core.write_buffer);
-                while (self.core.key_queue.popFirst()) |node| {
-                    const key_and_node: *Core.KeyAndNode = @fieldParentPtr("node", node);
-                    self.core.allocator.destroy(key_and_node);
-                }
                 self.core.tty.close(io);
             },
         }
@@ -733,11 +621,12 @@ pub const Terminal = struct {
         };
     }
 
-    fn write(self: *Terminal, txt: []const u8, x: usize, y: usize) !void {
-        if (y >= 0 and y < self.size.height) {
-            try moveCursor(&self.core.writer.interface, x, y);
-            try self.core.writer.interface.writeAll(txt);
-        }
+    pub fn shouldQuit(_: *const Terminal) bool {
+        return quit.load(.monotonic);
+    }
+
+    pub fn requestQuit(_: *Terminal) void {
+        quit.store(true, .monotonic);
     }
 
     pub fn render(self: *Terminal, root_widget: anytype, last_grid: *grd.Grid, last_size: *Size) !bool {
@@ -750,83 +639,107 @@ pub const Terminal = struct {
             }
         };
 
-        const root_size = Size{ .width = self.size.width, .height = self.size.height };
-        if (root_size.width == 0 or root_size.height == 0) {
-            return false;
-        }
-
-        // determine if the grid must be refreshed
-        var force_refresh = false;
-        if (last_size.*.width != root_size.width or last_size.*.height != root_size.height) {
-            force_refresh = true;
-        } else if (root_widget.getGrid()) |grid| {
-            if (last_grid.size.width != grid.size.width or last_grid.size.height != grid.size.height) {
-                force_refresh = true;
-            }
-        }
-
-        var grid_changed = force_refresh;
-
-        if (force_refresh) {
-            // rebuild the root widget
-            try root_widget.build(.{
-                .min_size = .{ .width = null, .height = null },
-                .max_size = .{ .width = root_size.width, .height = root_size.height },
-            }, root_widget.getFocus());
-            try clearRect(&self.core.writer.interface, 0, 0, root_size);
-            last_size.* = root_size;
-
-            // render the grid
-            if (root_widget.getGrid()) |grid| {
-                last_grid.deinit();
-                last_grid.* = try grd.Grid.initFromGrid(self.core.allocator, grid, grid.size, 0, 0);
-                for (0..grid.size.height) |y| {
-                    for (0..grid.size.width) |x| {
-                        if (grid.cells.items[try grid.cells.at(.{ y, x })].rune) |rune| {
-                            try self.write(rune, x, y);
-                        }
-                    }
-                }
-            }
-        } else {
-            if (root_widget.getGrid()) |grid| {
-                // clear cells that are in last grid but not current grid
-                for (0..last_grid.size.height) |y| {
-                    for (0..last_grid.size.width) |x| {
-                        const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
-                        if (cell.rune == null) {
-                            try self.write(" ", x, y);
-                        }
-
-                        if (!grid_changed) {
-                            const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
-                            grid_changed = !cell.eql(last_cell);
-                        }
-                    }
-                }
-
-                // render the grid
-                for (0..grid.size.height) |y| {
-                    for (0..grid.size.width) |x| {
-                        if (grid.cells.items[try grid.cells.at(.{ y, x })].rune) |rune| {
-                            try self.write(rune, x, y);
-                        }
-                    }
-                }
-
-                // update last_grid if necessary
-                if (grid_changed) {
-                    last_grid.deinit();
-                    last_grid.* = try grd.Grid.initFromGrid(self.core.allocator, grid, grid.size, 0, 0);
-                }
-            }
-        }
-
-        try self.core.writer.interface.flush();
-
-        return grid_changed;
+        return try renderToWriter(
+            &self.core.writer.interface,
+            self.core.allocator,
+            root_widget,
+            last_grid,
+            last_size,
+            self.size,
+        );
     }
 };
+
+pub fn renderToWriter(
+    writer: *std.Io.Writer,
+    allocator: std.mem.Allocator,
+    root_widget: anytype,
+    last_grid: *grd.Grid,
+    last_size: *Size,
+    size: Size,
+) !bool {
+    if (size.width == 0 or size.height == 0) {
+        return false;
+    }
+
+    // determine if the grid must be refreshed
+    var force_refresh = false;
+    if (last_size.*.width != size.width or last_size.*.height != size.height) {
+        force_refresh = true;
+    } else if (root_widget.getGrid()) |grid| {
+        if (last_grid.size.width != grid.size.width or last_grid.size.height != grid.size.height) {
+            force_refresh = true;
+        }
+    }
+
+    var grid_changed = force_refresh;
+
+    if (force_refresh) {
+        // rebuild the root widget
+        try root_widget.build(.{
+            .min_size = .{ .width = null, .height = null },
+            .max_size = .{ .width = size.width, .height = size.height },
+        }, root_widget.getFocus());
+        try clearRect(writer, 0, 0, size);
+        last_size.* = size;
+
+        // render the grid
+        if (root_widget.getGrid()) |grid| {
+            last_grid.deinit();
+            last_grid.* = try grd.Grid.initFromGrid(allocator, grid, grid.size, 0, 0);
+            for (0..grid.size.height) |y| {
+                for (0..grid.size.width) |x| {
+                    if (grid.cells.items[try grid.cells.at(.{ y, x })].rune) |rune| {
+                        try writeAt(writer, rune, x, y, size.height);
+                    }
+                }
+            }
+        }
+    } else {
+        if (root_widget.getGrid()) |grid| {
+            // clear cells that are in last grid but not current grid
+            for (0..last_grid.size.height) |y| {
+                for (0..last_grid.size.width) |x| {
+                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
+                    if (cell.rune == null) {
+                        try writeAt(writer, " ", x, y, size.height);
+                    }
+
+                    if (!grid_changed) {
+                        const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
+                        grid_changed = !cell.eql(last_cell);
+                    }
+                }
+            }
+
+            // render the grid
+            for (0..grid.size.height) |y| {
+                for (0..grid.size.width) |x| {
+                    if (grid.cells.items[try grid.cells.at(.{ y, x })].rune) |rune| {
+                        try writeAt(writer, rune, x, y, size.height);
+                    }
+                }
+            }
+
+            // update last_grid if necessary
+            if (grid_changed) {
+                last_grid.deinit();
+                last_grid.* = try grd.Grid.initFromGrid(allocator, grid, grid.size, 0, 0);
+            }
+        }
+    }
+
+    try writer.flush();
+
+    return grid_changed;
+}
+
+fn writeAt(writer: *std.Io.Writer, txt: []const u8, x: usize, y: usize, height: usize) !void {
+    if (y < height) {
+        try moveCursor(writer, x, y);
+        try writer.writeAll(txt);
+    }
+}
 
 pub fn moveCursor(writer: *std.Io.Writer, x: usize, y: usize) !void {
     _ = try writer.print("\x1B[{};{}H", .{ y + 1, x + 1 });
@@ -919,3 +832,140 @@ pub fn clearRect(writer: *std.Io.Writer, x: usize, y: usize, size: Size) !void {
         }
     }
 }
+
+pub const EscapeParser = struct {
+    allocator: std.mem.Allocator,
+    esc_buffer: std.ArrayList(u8),
+    key_queue: std.DoublyLinkedList,
+
+    const KeyAndNode = struct {
+        key: inp.Key,
+        node: std.DoublyLinkedList.Node,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) !EscapeParser {
+        return .{
+            .allocator = allocator,
+            .esc_buffer = try std.ArrayList(u8).initCapacity(allocator, 32),
+            .key_queue = std.DoublyLinkedList{},
+        };
+    }
+
+    pub fn deinit(self: *EscapeParser) void {
+        self.esc_buffer.deinit(self.allocator);
+        while (self.key_queue.popFirst()) |node| {
+            const key_and_node: *KeyAndNode = @fieldParentPtr("node", node);
+            self.allocator.destroy(key_and_node);
+        }
+    }
+
+    pub fn popQueued(self: *EscapeParser) ?inp.Key {
+        const node = self.key_queue.popFirst() orelse return null;
+        const key_and_node: *KeyAndNode = @fieldParentPtr("node", node);
+        const key = key_and_node.key;
+        self.allocator.destroy(key_and_node);
+        return key;
+    }
+
+    pub fn prepend(self: *EscapeParser, key: inp.Key) !void {
+        const key_and_node = try self.allocator.create(KeyAndNode);
+        errdefer self.allocator.destroy(key_and_node);
+        key_and_node.key = key;
+        key_and_node.node = .{};
+        self.key_queue.prepend(&key_and_node.node);
+    }
+
+    pub fn clearScratch(self: *EscapeParser) void {
+        self.esc_buffer.clearRetainingCapacity();
+    }
+
+    pub fn writeBytes(self: *EscapeParser, bytes: []const u8) !?inp.Key {
+        const text = std.unicode.Utf8View.init(bytes) catch return null;
+        var iter = text.iterator();
+        var key_maybe: ?inp.Key = null;
+        while (iter.nextCodepoint()) |codepoint| {
+            const next_bytes = iter.peek(1);
+            if (try self.writeCodepoint(codepoint, if (next_bytes.len == 1) next_bytes[0] else null)) |key| {
+                if (key_maybe == null) {
+                    key_maybe = key;
+                } else {
+                    var key_and_node = try self.allocator.create(KeyAndNode);
+                    errdefer self.allocator.destroy(key_and_node);
+                    key_and_node.key = key;
+                    key_and_node.node = .{};
+                    self.key_queue.append(&key_and_node.node);
+                }
+            }
+        }
+        return key_maybe;
+    }
+
+    fn writeCodepoint(self: *EscapeParser, codepoint: u21, next_byte_maybe: ?u8) !?inp.Key {
+        const esc_len = self.esc_buffer.items.len;
+
+        // sanity check
+        if (esc_len == self.esc_buffer.capacity) {
+            return error.EscCodeAtCapacity;
+        }
+        // we are in an esc sequence
+        else if (esc_len > 0) {
+            // esc sequences should be ascii-only
+            const byte: u8 = std.math.cast(u8, codepoint) orelse return null;
+
+            // the character after esc is part of the sequence and doesn't need to be looked at
+            if (esc_len == 1) {
+                self.esc_buffer.appendAssumeCapacity(byte);
+                return null;
+            }
+
+            // return key or add byte to esc sequence
+            switch (byte) {
+                // chars that terminate the sequence
+                0x40...0x7E => {
+                    const key: inp.Key = switch (byte) {
+                        'A' => .arrow_up,
+                        'B' => .arrow_down,
+                        'C' => .arrow_right,
+                        'D' => .arrow_left,
+                        'F' => .end,
+                        'H' => .home,
+                        'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
+                        '~' => blk: {
+                            var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
+                            const code = codes.first();
+                            break :blk if (std.mem.eql(u8, code, "1"))
+                                .home
+                            else if (std.mem.eql(u8, code, "4"))
+                                .end
+                            else if (std.mem.eql(u8, code, "5"))
+                                .page_up
+                            else if (std.mem.eql(u8, code, "6"))
+                                .page_down
+                            else
+                                .unknown;
+                        },
+                        else => .unknown,
+                    };
+                    self.esc_buffer.clearRetainingCapacity();
+                    return key;
+                },
+                // add all other chars to the esc sequence
+                else => self.esc_buffer.appendAssumeCapacity(byte),
+            }
+        }
+        // we are not in an esc sequence
+        else {
+            if ('\x1B' == codepoint) {
+                if (next_byte_maybe) |next_byte| {
+                    // sequence must start with [
+                    if (next_byte == '[') {
+                        self.esc_buffer.appendAssumeCapacity('\x1B');
+                        return null;
+                    }
+                }
+            }
+            return .{ .codepoint = codepoint };
+        }
+        return null;
+    }
+};
