@@ -674,6 +674,10 @@ pub fn renderToWriter(
 
     var grid_changed = force_refresh;
 
+    // start escape code for synchronized output
+    // everything in between the start and stop code is printed at once to prevent flickering
+    try writer.writeAll("\x1B[?2026h");
+
     if (force_refresh) {
         // rebuild the root widget
         try root_widget.build(.{
@@ -729,6 +733,8 @@ pub fn renderToWriter(
         }
     }
 
+    // stop escape code for synchronized output
+    try writer.writeAll("\x1B[?2026l");
     try writer.flush();
 
     return grid_changed;
