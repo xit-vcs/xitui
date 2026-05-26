@@ -3,10 +3,13 @@ const layout = @import("./layout.zig");
 
 var next_id: usize = 0;
 
-const FocusKind = enum {
+pub const FocusKind = enum {
     container,
     text,
     text_box,
+    text_input,
+    text_input_password,
+    submit_button,
 };
 
 const Child = struct {

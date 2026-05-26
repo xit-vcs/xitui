@@ -384,7 +384,7 @@ pub fn TextBox(comptime Widget: type) type {
 
         pub const Options = struct {
             border_style: ?BorderStyle,
-            rounded_corners: bool = false,
+            rounded_corners: bool = true,
             wrap_kind: WrapKind,
         };
 
@@ -509,6 +509,240 @@ pub fn TextBox(comptime Widget: type) type {
 
         pub fn getFocus(self: *TextBox(Widget)) *Focus {
             return self.box.getFocus();
+        }
+    };
+}
+
+pub fn TextInput(comptime Widget: type) type {
+    return struct {
+        allocator: std.mem.Allocator,
+        focus: Focus,
+        grid: ?Grid,
+        content: std.ArrayList([]const u8),
+        cursor: usize,
+        scroll_offset: usize,
+        options: Options,
+
+        pub const Options = struct {
+            border_style: ?BorderStyle = .single_dashed,
+            rounded_corners: bool = true,
+            // visible width in codepoints, excluding the border
+            visible_width: usize = 20,
+            // when true, every character is rendered as a bullet so the
+            // actual content isn't visible on screen
+            password: bool = false,
+            // optional label rendered over the top border (e.g. "username").
+            // when empty, the border is drawn unchanged.
+            label: []const u8 = "",
+            // optional form-field name; the web renderer emits it as the
+            // HTML `name` attribute so the value is submitted with that key.
+            name: []const u8 = "",
+        };
+
+        pub fn init(allocator: std.mem.Allocator, options: Options) TextInput(Widget) {
+            return .{
+                .allocator = allocator,
+                .focus = Focus.init(allocator, if (options.password) .text_input_password else .text_input),
+                .grid = null,
+                .content = .empty,
+                .cursor = 0,
+                .scroll_offset = 0,
+                .options = options,
+            };
+        }
+
+        pub fn deinit(self: *TextInput(Widget)) void {
+            self.focus.deinit();
+            if (self.grid) |*grid| {
+                grid.deinit();
+                self.grid = null;
+            }
+            for (self.content.items) |cp| self.allocator.free(cp);
+            self.content.deinit(self.allocator);
+        }
+
+        // replaces all typed content with the codepoints in `bytes`, dropping
+        // existing allocations. cursor lands at the end so subsequent edits
+        // (or rendering) treat the supplied text as the new state.
+        pub fn setContent(self: *TextInput(Widget), bytes: []const u8) !void {
+            for (self.content.items) |cp| self.allocator.free(cp);
+            self.content.clearAndFree(self.allocator);
+
+            var utf8 = (try std.unicode.Utf8View.init(bytes)).iterator();
+            while (utf8.nextCodepointSlice()) |cp_slice| {
+                const owned = try self.allocator.dupe(u8, cp_slice);
+                errdefer self.allocator.free(owned);
+                try self.content.append(self.allocator, owned);
+            }
+
+            self.cursor = self.content.items.len;
+            self.scroll_offset = 0;
+        }
+
+        pub fn clear(self: *TextInput(Widget)) void {
+            for (self.content.items) |cp| self.allocator.free(cp);
+            self.content.clearAndFree(self.allocator);
+            self.cursor = 0;
+            self.scroll_offset = 0;
+        }
+
+        pub fn build(self: *TextInput(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
+            self.clearGrid();
+
+            const effective_border: ?BorderStyle = if (self.options.border_style) |base| switch (base) {
+                .hidden => .hidden,
+                else => if (root_focus.grandchild_id == self.focus.id) .double_dashed else .single_dashed,
+            } else null;
+
+            const border_size: usize = if (effective_border) |_| 1 else 0;
+            const height: usize = 1 + border_size * 2;
+
+            // width is fixed at the option's visible_width; longer content
+            // scrolls horizontally inside it.
+            const desired_width = self.options.visible_width + border_size * 2;
+            const width: usize = if (constraint.max_size.width) |max_width|
+                @min(desired_width, max_width)
+            else
+                desired_width;
+
+            if (width <= border_size * 2) return;
+
+            const inner_width = width - border_size * 2;
+
+            // keep cursor inside the visible window
+            if (self.cursor < self.scroll_offset) {
+                self.scroll_offset = self.cursor;
+            } else if (self.cursor >= self.scroll_offset + inner_width) {
+                self.scroll_offset = self.cursor + 1 - inner_width;
+            }
+
+            var grid = try Grid.init(self.allocator, .{ .width = width, .height = height });
+            errdefer grid.deinit();
+
+            // text + cursor
+            for (0..inner_width) |i| {
+                const content_index = self.scroll_offset + i;
+                const cell_x = i + border_size;
+                const cell_y = border_size;
+                const cell_idx = try grid.cells.at(.{ cell_y, cell_x });
+                if (content_index < self.content.items.len) {
+                    grid.cells.items[cell_idx].rune = if (self.options.password) "•" else self.content.items[content_index];
+                } else if (content_index == self.content.items.len and self.cursor == content_index) {
+                    // cursor sits past the last char — paint a space underneath
+                    grid.cells.items[cell_idx].rune = " ";
+                }
+                if (content_index == self.cursor) {
+                    grid.cells.items[cell_idx].style.inverted = true;
+                    if (grid.cells.items[cell_idx].rune == null) {
+                        grid.cells.items[cell_idx].rune = " ";
+                    }
+                }
+            }
+
+            // border
+            if (effective_border) |border_style| {
+                const horiz_line = switch (border_style) {
+                    .hidden => " ",
+                    .single, .single_dashed => "─",
+                    .double, .double_dashed => "═",
+                };
+                const vert_line = switch (border_style) {
+                    .hidden => " ",
+                    .single, .single_dashed => "│",
+                    .double, .double_dashed => "║",
+                };
+                const top_left = switch (border_style) {
+                    .hidden => " ",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╭" else "┌",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╭" else "╔",
+                };
+                const top_right = switch (border_style) {
+                    .hidden => " ",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╮" else "┐",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╮" else "╗",
+                };
+                const bottom_left = switch (border_style) {
+                    .hidden => " ",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╰" else "└",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╰" else "╚",
+                };
+                const bottom_right = switch (border_style) {
+                    .hidden => " ",
+                    .single, .single_dashed => if (self.options.rounded_corners) "╯" else "┘",
+                    .double, .double_dashed => if (self.options.rounded_corners) "╯" else "╝",
+                };
+                for (1..grid.size.width - 1) |x| {
+                    if ((border_style == .single_dashed or border_style == .double_dashed) and x % 2 == 1) continue;
+                    grid.cells.items[try grid.cells.at(.{ 0, x })].rune = horiz_line;
+                    grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, x })].rune = horiz_line;
+                }
+                grid.cells.items[try grid.cells.at(.{ 1, 0 })].rune = vert_line;
+                grid.cells.items[try grid.cells.at(.{ 1, grid.size.width - 1 })].rune = vert_line;
+                grid.cells.items[try grid.cells.at(.{ 0, 0 })].rune = top_left;
+                grid.cells.items[try grid.cells.at(.{ 0, grid.size.width - 1 })].rune = top_right;
+                grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, 0 })].rune = bottom_left;
+                grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, grid.size.width - 1 })].rune = bottom_right;
+
+                // overlay the label on the top border, truncating to fit
+                if (self.options.label.len > 0 and grid.size.width > 2) {
+                    var label_iter = (try std.unicode.Utf8View.init(self.options.label)).iterator();
+                    var x: usize = 1;
+                    while (label_iter.nextCodepointSlice()) |ch| {
+                        if (x >= grid.size.width - 1) break;
+                        grid.cells.items[try grid.cells.at(.{ 0, x })].rune = ch;
+                        x += 1;
+                    }
+                }
+            }
+
+            self.grid = grid;
+        }
+
+        pub fn input(self: *TextInput(Widget), key: inp.Key, root_focus: *Focus) !void {
+            _ = root_focus;
+            switch (key) {
+                .arrow_left => self.cursor -|= 1,
+                .arrow_right => if (self.cursor < self.content.items.len) {
+                    self.cursor += 1;
+                },
+                .home => self.cursor = 0,
+                .end => self.cursor = self.content.items.len,
+                .delete => if (self.cursor < self.content.items.len) {
+                    const removed = self.content.orderedRemove(self.cursor);
+                    self.allocator.free(removed);
+                },
+                .backspace => if (self.cursor > 0) {
+                    const removed = self.content.orderedRemove(self.cursor - 1);
+                    self.allocator.free(removed);
+                    self.cursor -= 1;
+                },
+                .codepoint => |cp| {
+                    // ignore control characters; only printable text is inserted
+                    if (cp < 0x20) return;
+                    var buf: [4]u8 = undefined;
+                    const len = try std.unicode.utf8Encode(cp, &buf);
+                    const owned = try self.allocator.dupe(u8, buf[0..len]);
+                    errdefer self.allocator.free(owned);
+                    try self.content.insert(self.allocator, self.cursor, owned);
+                    self.cursor += 1;
+                },
+                else => {},
+            }
+        }
+
+        pub fn clearGrid(self: *TextInput(Widget)) void {
+            if (self.grid) |*grid| {
+                grid.deinit();
+                self.grid = null;
+            }
+        }
+
+        pub fn getGrid(self: TextInput(Widget)) ?Grid {
+            return self.grid;
+        }
+
+        pub fn getFocus(self: *TextInput(Widget)) *Focus {
+            return &self.focus;
         }
     };
 }

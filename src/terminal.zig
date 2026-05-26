@@ -294,7 +294,11 @@ pub const Core = switch (builtin.os.tag) {
                         if (event.KeyEvent.uChar.UnicodeChar > 0) {
                             var utf8_buffer = [_]u8{0} ** 4;
                             const size = try std.unicode.utf16LeToUtf8(&utf8_buffer, &[_]u16{event.KeyEvent.uChar.UnicodeChar});
-                            return .{ .codepoint = try std.unicode.utf8Decode(utf8_buffer[0..size]) };
+                            const cp = try std.unicode.utf8Decode(utf8_buffer[0..size]);
+                            if (cp == 8 or cp == 127) return .backspace;
+                            if (cp == 13 or cp == 10) return .enter;
+                            if (cp == 9) return .tab;
+                            return .{ .codepoint = cp };
                         }
                         // otherwise it's a non-printable key. key codes are listed here:
                         // https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
@@ -308,6 +312,8 @@ pub const Core = switch (builtin.os.tag) {
                                 0x26 => .arrow_up,
                                 0x27 => .arrow_right,
                                 0x28 => .arrow_down,
+                                0x0D => .enter,
+                                0x2E => .delete,
                                 else => continue,
                             };
                         }
@@ -693,8 +699,9 @@ pub fn renderToWriter(
             last_grid.* = try grd.Grid.initFromGrid(allocator, grid, grid.size, 0, 0);
             for (0..grid.size.height) |y| {
                 for (0..grid.size.width) |x| {
-                    if (grid.cells.items[try grid.cells.at(.{ y, x })].rune) |rune| {
-                        try writeAt(writer, rune, x, y, size.height);
+                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
+                    if (cell.rune) |rune| {
+                        try writeAt(writer, rune, cell.style, x, y, size.height);
                     }
                 }
             }
@@ -706,7 +713,7 @@ pub fn renderToWriter(
                 for (0..last_grid.size.width) |x| {
                     const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
                     if (cell.rune == null) {
-                        try writeAt(writer, " ", x, y, size.height);
+                        try writeAt(writer, " ", .{}, x, y, size.height);
                     }
 
                     if (!grid_changed) {
@@ -719,8 +726,9 @@ pub fn renderToWriter(
             // render the grid
             for (0..grid.size.height) |y| {
                 for (0..grid.size.width) |x| {
-                    if (grid.cells.items[try grid.cells.at(.{ y, x })].rune) |rune| {
-                        try writeAt(writer, rune, x, y, size.height);
+                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
+                    if (cell.rune) |rune| {
+                        try writeAt(writer, rune, cell.style, x, y, size.height);
                     }
                 }
             }
@@ -740,10 +748,12 @@ pub fn renderToWriter(
     return grid_changed;
 }
 
-fn writeAt(writer: *std.Io.Writer, txt: []const u8, x: usize, y: usize, height: usize) !void {
+fn writeAt(writer: *std.Io.Writer, txt: []const u8, style: grd.Grid.Style, x: usize, y: usize, height: usize) !void {
     if (y < height) {
         try moveCursor(writer, x, y);
+        if (style.inverted) try writer.writeAll("\x1B[7m");
         try writer.writeAll(txt);
+        if (style.inverted) try writer.writeAll("\x1B[27m");
     }
 }
 
@@ -935,12 +945,16 @@ pub const EscapeParser = struct {
                         'D' => .arrow_left,
                         'F' => .end,
                         'H' => .home,
+                        // shift+tab — xterm-style "CSI Z"
+                        'Z' => .back_tab,
                         'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
                         '~' => blk: {
                             var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
                             const code = codes.first();
                             break :blk if (std.mem.eql(u8, code, "1"))
                                 .home
+                            else if (std.mem.eql(u8, code, "3"))
+                                .delete
                             else if (std.mem.eql(u8, code, "4"))
                                 .end
                             else if (std.mem.eql(u8, code, "5"))
@@ -970,6 +984,9 @@ pub const EscapeParser = struct {
                     }
                 }
             }
+            if (codepoint == 8 or codepoint == 127) return .backspace;
+            if (codepoint == 13 or codepoint == 10) return .enter;
+            if (codepoint == 9) return .tab;
             return .{ .codepoint = codepoint };
         }
         return null;

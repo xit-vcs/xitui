@@ -59,7 +59,7 @@ pub fn main() !void {
         var blocking = !grid_changed;
         while (try terminal.readKey(io, blocking)) |key| {
             switch (key) {
-                .codepoint => |cp| if (cp == 'q') return,
+                .codepoint => |cp| if (cp == 'q') return else try root.input(key, root.getFocus()),
                 .mouse => |mouse| {
                     if (mouse.action == .press and mouse.action.press == .left) {
                         const root_focus = root.getFocus();
@@ -115,6 +115,20 @@ const WidgetList = struct {
         errdefer self.deinit();
 
         const inner_box = &self.scroll.child.box;
+
+        {
+            var text_input = wgt.TextInput(Widget).init(allocator, .{ .label = "username" });
+            errdefer text_input.deinit();
+            text_input.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
+        }
+
+        {
+            var text_input = wgt.TextInput(Widget).init(allocator, .{ .label = "password", .password = true });
+            errdefer text_input.deinit();
+            text_input.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
+        }
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "this is a TextBox", .{ .border_style = .single, .wrap_kind = .none });
@@ -173,10 +187,21 @@ const WidgetList = struct {
         self.clearGrid();
         const children = &self.scroll.child.box.children;
         for (children.keys(), children.values()) |id, *commit| {
-            commit.widget.text_box.options.border_style = if (self.getFocus().child_id == id)
-                (if (root_focus.grandchild_id == id) .double else .single)
-            else
-                .hidden;
+            switch (commit.widget) {
+                .text_box => |*tb| {
+                    tb.options.border_style = if (self.getFocus().child_id == id)
+                        (if (root_focus.grandchild_id == id) .double else .single)
+                    else
+                        .hidden;
+                },
+                .text_input => |*ti| {
+                    ti.options.border_style = if (self.getFocus().child_id == id)
+                        .single_dashed
+                    else
+                        .hidden;
+                },
+                else => {},
+            }
         }
         try self.scroll.build(constraint, root_focus);
     }
@@ -185,6 +210,19 @@ const WidgetList = struct {
         if (self.getFocus().child_id) |child_id| {
             const children = &self.scroll.child.box.children;
             if (children.getIndex(child_id)) |current_index| {
+                // forward text-editing keys to the focused TextInput so they
+                // operate on the cursor rather than on the list itself.
+                const focused = &children.values()[current_index].widget;
+                if (focused.* == .text_input) {
+                    switch (key) {
+                        .codepoint, .arrow_left, .arrow_right, .home, .end, .delete, .backspace => {
+                            try focused.input(key, root_focus);
+                            return;
+                        },
+                        else => {},
+                    }
+                }
+
                 var index = current_index;
 
                 switch (key) {
@@ -271,6 +309,7 @@ pub const Widget = union(enum) {
     text: wgt.Text(Widget),
     box: wgt.Box(Widget),
     text_box: wgt.TextBox(Widget),
+    text_input: wgt.TextInput(Widget),
     scroll: wgt.Scroll(Widget),
     widget_list: WidgetList,
 

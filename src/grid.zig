@@ -8,10 +8,20 @@ pub const Grid = struct {
     cells: Cells,
     buffer: []Grid.Cell,
 
+    pub const Style = struct {
+        inverted: bool = false,
+
+        pub fn eql(self: Style, other: Style) bool {
+            return self.inverted == other.inverted;
+        }
+    };
+
     pub const Cell = struct {
         rune: ?[]const u8,
+        style: Style = .{},
 
         pub fn eql(self: Cell, other: Cell) bool {
+            if (!self.style.eql(other.style)) return false;
             if (self.rune) |rune| {
                 if (other.rune) |other_rune| {
                     return std.mem.eql(u8, rune, other_rune);
@@ -33,7 +43,7 @@ pub const Grid = struct {
         const buffer = try allocator.alloc(Grid.Cell, size.width * size.height);
         errdefer allocator.free(buffer);
         for (buffer) |*cell| {
-            cell.rune = null;
+            cell.* = .{ .rune = null };
         }
         return .{
             .allocator = allocator,
@@ -47,7 +57,7 @@ pub const Grid = struct {
         const buffer = try allocator.alloc(Grid.Cell, size.width * size.height);
         errdefer allocator.free(buffer);
         for (buffer) |*cell| {
-            cell.rune = null;
+            cell.* = .{ .rune = null };
         }
         const ugrid_x: usize = if (grid_x < 0) 0 else @intCast(grid_x);
         const ugrid_y: usize = if (grid_y < 0) 0 else @intCast(grid_y);
@@ -58,7 +68,7 @@ pub const Grid = struct {
             for (ugrid_x..ugrid_x + size.width) |source_x| {
                 if (cells.at(.{ dest_y, dest_x })) |dest_index| {
                     if (grid.cells.at(.{ source_y, source_x })) |source_index| {
-                        cells.items[dest_index].rune = grid.cells.items[source_index].rune;
+                        cells.items[dest_index] = grid.cells.items[source_index];
                     } else |_| {
                         break;
                     }
@@ -84,9 +94,9 @@ pub const Grid = struct {
     pub fn drawGrid(self: *Grid, child_grid: Grid, target_x: usize, target_y: usize) !void {
         for (0..child_grid.size.height) |y| {
             for (0..child_grid.size.width) |x| {
-                const rune = child_grid.cells.items[try child_grid.cells.at(.{ y, x })].rune;
+                const src = child_grid.cells.items[try child_grid.cells.at(.{ y, x })];
                 if (self.cells.at(.{ y + target_y, x + target_x })) |index| {
-                    self.cells.items[index].rune = rune;
+                    self.cells.items[index] = src;
                 } else |_| {
                     break;
                 }

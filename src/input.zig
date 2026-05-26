@@ -8,6 +8,11 @@ pub const Key = union(enum) {
     end,
     page_up,
     page_down,
+    delete,
+    backspace,
+    enter,
+    tab,
+    back_tab,
     codepoint: u21,
     mouse: Mouse,
     event: enum {
