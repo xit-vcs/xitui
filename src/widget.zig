@@ -6,21 +6,20 @@ const inp = @import("./input.zig");
 
 pub fn Text(comptime Widget: type) type {
     return struct {
-        allocator: std.mem.Allocator,
         focus: Focus,
         grid: ?Grid,
         content: []const u8,
 
         pub fn init(allocator: std.mem.Allocator, content: []const u8) Text(Widget) {
             return .{
-                .allocator = allocator,
                 .focus = Focus.init(allocator, .text),
                 .grid = null,
                 .content = content,
             };
         }
 
-        pub fn deinit(self: *Text(Widget)) void {
+        pub fn deinit(self: *Text(Widget), allocator: std.mem.Allocator) void {
+            _ = allocator;
             self.focus.deinit();
             if (self.grid) |*grid| {
                 grid.deinit();
@@ -28,11 +27,11 @@ pub fn Text(comptime Widget: type) type {
             }
         }
 
-        pub fn build(self: *Text(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
+        pub fn build(self: *Text(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             _ = root_focus;
             self.clearGrid();
             const width = try std.unicode.utf8CountCodepoints(self.content);
-            var grid = try Grid.init(self.allocator, .{ .width = @max(1, @min(width, constraint.max_size.width orelse width)), .height = 1 });
+            var grid = try Grid.init(allocator, .{ .width = @max(1, @min(width, constraint.max_size.width orelse width)), .height = 1 });
             errdefer grid.deinit();
             var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
             var i: u32 = 0;
@@ -46,8 +45,9 @@ pub fn Text(comptime Widget: type) type {
             self.grid = grid;
         }
 
-        pub fn input(self: *Text(Widget), key: inp.Key, root_focus: *Focus) !void {
+        pub fn input(self: *Text(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
             _ = self;
+            _ = allocator;
             _ = key;
             _ = root_focus;
         }
@@ -81,7 +81,6 @@ pub fn Box(comptime Widget: type) type {
     return struct {
         focus: Focus,
         grid: ?Grid,
-        allocator: std.mem.Allocator,
         children: std.AutoArrayHashMapUnmanaged(usize, Child),
         options: Options,
 
@@ -106,25 +105,24 @@ pub fn Box(comptime Widget: type) type {
             return .{
                 .focus = Focus.init(allocator, .container),
                 .grid = null,
-                .allocator = allocator,
                 .children = .empty,
                 .options = options,
             };
         }
 
-        pub fn deinit(self: *Box(Widget)) void {
+        pub fn deinit(self: *Box(Widget), allocator: std.mem.Allocator) void {
             self.focus.deinit();
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
             }
             for (self.children.values()) |*child| {
-                child.widget.deinit();
+                child.widget.deinit(allocator);
             }
-            self.children.deinit(self.allocator);
+            self.children.deinit(allocator);
         }
 
-        pub fn build(self: *Box(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
+        pub fn build(self: *Box(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
 
             const border_size: usize = if (self.options.border_style) |_| 1 else 0;
@@ -136,10 +134,10 @@ pub fn Box(comptime Widget: type) type {
             }
 
             var sorted_children: std.AutoArrayHashMapUnmanaged(usize, void) = .empty;
-            defer sorted_children.deinit(self.allocator);
+            defer sorted_children.deinit(allocator);
             var should_sort = false;
             for (self.children.values(), 0..) |child, i| {
-                try sorted_children.put(self.allocator, i, {});
+                try sorted_children.put(allocator, i, {});
                 if (child.min_size != null) {
                     should_sort = true;
                 }
@@ -230,7 +228,7 @@ pub fn Box(comptime Widget: type) type {
                     }
                 }
 
-                try child.widget.build(.{
+                try child.widget.build(allocator, .{
                     .min_size = child_min_size,
                     .max_size = .{ .width = expected_remaining_width_maybe, .height = expected_remaining_height_maybe },
                 }, root_focus);
@@ -256,7 +254,7 @@ pub fn Box(comptime Widget: type) type {
             height += border_size * 2;
             height = @max(height, constraint.min_size.height orelse height);
 
-            var grid = try Grid.init(self.allocator, .{ .width = width, .height = height });
+            var grid = try Grid.init(allocator, .{ .width = width, .height = height });
             errdefer grid.deinit();
 
             self.getFocus().clear();
@@ -345,9 +343,9 @@ pub fn Box(comptime Widget: type) type {
             self.grid = grid;
         }
 
-        pub fn input(self: *Box(Widget), key: inp.Key, root_focus: *Focus) !void {
+        pub fn input(self: *Box(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
             for (self.children.values()) |*child| {
-                try child.widget.input(key, root_focus);
+                try child.widget.input(allocator, key, root_focus);
             }
         }
 
@@ -375,7 +373,6 @@ pub const WrapKind = enum {
 
 pub fn TextBox(comptime Widget: type) type {
     return struct {
-        allocator: std.mem.Allocator,
         box: Box(Widget),
         options: Options,
         last_wrap_width: ?usize,
@@ -384,7 +381,7 @@ pub fn TextBox(comptime Widget: type) type {
 
         pub const Options = struct {
             border_style: ?BorderStyle,
-            rounded_corners: bool = true,
+            rounded_corners: bool = false,
             wrap_kind: WrapKind,
         };
 
@@ -417,16 +414,15 @@ pub fn TextBox(comptime Widget: type) type {
             }
 
             var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert });
-            errdefer box.deinit();
+            errdefer box.deinit(allocator);
             box.getFocus().kind = .text_box;
             for (lines.items) |line| {
                 var text = Text(Widget).init(allocator, line);
-                errdefer text.deinit();
+                errdefer text.deinit(allocator);
                 try box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
             }
 
             return .{
-                .allocator = allocator,
                 .box = box,
                 .options = options,
                 .last_wrap_width = null,
@@ -435,15 +431,15 @@ pub fn TextBox(comptime Widget: type) type {
             };
         }
 
-        pub fn deinit(self: *TextBox(Widget)) void {
-            self.box.deinit();
+        pub fn deinit(self: *TextBox(Widget), allocator: std.mem.Allocator) void {
+            self.box.deinit(allocator);
             for (self.lines.items) |line| {
-                self.allocator.free(line);
+                allocator.free(line);
             }
-            self.lines.deinit(self.allocator);
+            self.lines.deinit(allocator);
         }
 
-        pub fn build(self: *TextBox(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
+        pub fn build(self: *TextBox(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             if (.char == self.options.wrap_kind) {
                 if (constraint.max_size.width) |max_width| {
                     const should_rewrap = if (self.last_wrap_width) |last_wrap_width| last_wrap_width != max_width else true;
@@ -454,36 +450,36 @@ pub fn TextBox(comptime Widget: type) type {
 
                         {
                             for (self.lines.items) |line| {
-                                self.allocator.free(line);
+                                allocator.free(line);
                             }
-                            self.lines.clearAndFree(self.allocator);
+                            self.lines.clearAndFree(allocator);
 
                             var line: std.ArrayList(u8) = .empty;
-                            errdefer line.deinit(self.allocator);
+                            errdefer line.deinit(allocator);
 
                             var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
                             while (utf8.nextCodepointSlice()) |char| {
                                 if (std.mem.eql(u8, char, "\n")) {
-                                    try self.lines.append(self.allocator, try line.toOwnedSlice(self.allocator));
+                                    try self.lines.append(allocator, try line.toOwnedSlice(allocator));
                                 } else {
-                                    try line.appendSlice(self.allocator, char);
+                                    try line.appendSlice(allocator, char);
                                 }
 
                                 if (std.mem.eql(u8, utf8.peek(1), "")) {
-                                    try self.lines.append(self.allocator, try line.toOwnedSlice(self.allocator));
+                                    try self.lines.append(allocator, try line.toOwnedSlice(allocator));
                                 } else if (try std.unicode.utf8CountCodepoints(line.items) + (border_size * 2) == max_width) {
-                                    try self.lines.append(self.allocator, try line.toOwnedSlice(self.allocator));
+                                    try self.lines.append(allocator, try line.toOwnedSlice(allocator));
                                 }
                             }
                         }
 
-                        const box = try Box(Widget).init(self.allocator, .{ .border_style = self.options.border_style, .rounded_corners = self.options.rounded_corners, .direction = .vert });
-                        self.box.deinit();
+                        const box = try Box(Widget).init(allocator, .{ .border_style = self.options.border_style, .rounded_corners = self.options.rounded_corners, .direction = .vert });
+                        self.box.deinit(allocator);
                         self.box = box;
                         for (self.lines.items) |line| {
-                            var text = Text(Widget).init(self.allocator, line);
-                            errdefer text.deinit();
-                            try self.box.children.put(self.allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
+                            var text = Text(Widget).init(allocator, line);
+                            errdefer text.deinit(allocator);
+                            try self.box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
                         }
                     }
                 }
@@ -492,11 +488,11 @@ pub fn TextBox(comptime Widget: type) type {
             self.clearGrid();
             self.box.options.border_style = self.options.border_style;
             self.box.options.rounded_corners = self.options.rounded_corners;
-            try self.box.build(constraint, root_focus);
+            try self.box.build(allocator, constraint, root_focus);
         }
 
-        pub fn input(self: *TextBox(Widget), key: inp.Key, root_focus: *Focus) !void {
-            try self.box.input(key, root_focus);
+        pub fn input(self: *TextBox(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
+            try self.box.input(allocator, key, root_focus);
         }
 
         pub fn clearGrid(self: *TextBox(Widget)) void {
@@ -515,7 +511,6 @@ pub fn TextBox(comptime Widget: type) type {
 
 pub fn TextInput(comptime Widget: type) type {
     return struct {
-        allocator: std.mem.Allocator,
         focus: Focus,
         grid: ?Grid,
         content: std.ArrayList([]const u8),
@@ -525,7 +520,7 @@ pub fn TextInput(comptime Widget: type) type {
 
         pub const Options = struct {
             border_style: ?BorderStyle = .single_dashed,
-            rounded_corners: bool = true,
+            rounded_corners: bool = false,
             // visible width in codepoints, excluding the border
             visible_width: usize = 20,
             // when true, every character is rendered as a bullet so the
@@ -541,7 +536,6 @@ pub fn TextInput(comptime Widget: type) type {
 
         pub fn init(allocator: std.mem.Allocator, options: Options) TextInput(Widget) {
             return .{
-                .allocator = allocator,
                 .focus = Focus.init(allocator, if (options.password) .text_input_password else .text_input),
                 .grid = null,
                 .content = .empty,
@@ -551,42 +545,42 @@ pub fn TextInput(comptime Widget: type) type {
             };
         }
 
-        pub fn deinit(self: *TextInput(Widget)) void {
+        pub fn deinit(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
             self.focus.deinit();
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
             }
-            for (self.content.items) |cp| self.allocator.free(cp);
-            self.content.deinit(self.allocator);
+            for (self.content.items) |cp| allocator.free(cp);
+            self.content.deinit(allocator);
         }
 
         // replaces all typed content with the codepoints in `bytes`, dropping
         // existing allocations. cursor lands at the end so subsequent edits
         // (or rendering) treat the supplied text as the new state.
-        pub fn setContent(self: *TextInput(Widget), bytes: []const u8) !void {
-            for (self.content.items) |cp| self.allocator.free(cp);
-            self.content.clearAndFree(self.allocator);
+        pub fn setContent(self: *TextInput(Widget), allocator: std.mem.Allocator, bytes: []const u8) !void {
+            for (self.content.items) |cp| allocator.free(cp);
+            self.content.clearAndFree(allocator);
 
             var utf8 = (try std.unicode.Utf8View.init(bytes)).iterator();
             while (utf8.nextCodepointSlice()) |cp_slice| {
-                const owned = try self.allocator.dupe(u8, cp_slice);
-                errdefer self.allocator.free(owned);
-                try self.content.append(self.allocator, owned);
+                const owned = try allocator.dupe(u8, cp_slice);
+                errdefer allocator.free(owned);
+                try self.content.append(allocator, owned);
             }
 
             self.cursor = self.content.items.len;
             self.scroll_offset = 0;
         }
 
-        pub fn clear(self: *TextInput(Widget)) void {
-            for (self.content.items) |cp| self.allocator.free(cp);
-            self.content.clearAndFree(self.allocator);
+        pub fn clear(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
+            for (self.content.items) |cp| allocator.free(cp);
+            self.content.clearAndFree(allocator);
             self.cursor = 0;
             self.scroll_offset = 0;
         }
 
-        pub fn build(self: *TextInput(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
+        pub fn build(self: *TextInput(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
 
             const effective_border: ?BorderStyle = if (self.options.border_style) |base| switch (base) {
@@ -616,7 +610,7 @@ pub fn TextInput(comptime Widget: type) type {
                 self.scroll_offset = self.cursor + 1 - inner_width;
             }
 
-            var grid = try Grid.init(self.allocator, .{ .width = width, .height = height });
+            var grid = try Grid.init(allocator, .{ .width = width, .height = height });
             errdefer grid.deinit();
 
             // text + cursor
@@ -698,7 +692,7 @@ pub fn TextInput(comptime Widget: type) type {
             self.grid = grid;
         }
 
-        pub fn input(self: *TextInput(Widget), key: inp.Key, root_focus: *Focus) !void {
+        pub fn input(self: *TextInput(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
             _ = root_focus;
             switch (key) {
                 .arrow_left => self.cursor -|= 1,
@@ -709,11 +703,11 @@ pub fn TextInput(comptime Widget: type) type {
                 .end => self.cursor = self.content.items.len,
                 .delete => if (self.cursor < self.content.items.len) {
                     const removed = self.content.orderedRemove(self.cursor);
-                    self.allocator.free(removed);
+                    allocator.free(removed);
                 },
                 .backspace => if (self.cursor > 0) {
                     const removed = self.content.orderedRemove(self.cursor - 1);
-                    self.allocator.free(removed);
+                    allocator.free(removed);
                     self.cursor -= 1;
                 },
                 .codepoint => |cp| {
@@ -721,9 +715,9 @@ pub fn TextInput(comptime Widget: type) type {
                     if (cp < 0x20) return;
                     var buf: [4]u8 = undefined;
                     const len = try std.unicode.utf8Encode(cp, &buf);
-                    const owned = try self.allocator.dupe(u8, buf[0..len]);
-                    errdefer self.allocator.free(owned);
-                    try self.content.insert(self.allocator, self.cursor, owned);
+                    const owned = try allocator.dupe(u8, buf[0..len]);
+                    errdefer allocator.free(owned);
+                    try self.content.insert(allocator, self.cursor, owned);
                     self.cursor += 1;
                 },
                 else => {},
@@ -749,7 +743,6 @@ pub fn TextInput(comptime Widget: type) type {
 
 pub fn Scroll(comptime Widget: type) type {
     return struct {
-        allocator: std.mem.Allocator,
         grid: ?Grid,
         child: *Widget,
         x: isize,
@@ -767,7 +760,6 @@ pub fn Scroll(comptime Widget: type) type {
             errdefer allocator.destroy(child);
             child.* = widget;
             return .{
-                .allocator = allocator,
                 .grid = null,
                 .child = child,
                 .x = 0,
@@ -776,16 +768,16 @@ pub fn Scroll(comptime Widget: type) type {
             };
         }
 
-        pub fn deinit(self: *Scroll(Widget)) void {
+        pub fn deinit(self: *Scroll(Widget), allocator: std.mem.Allocator) void {
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
             }
-            self.child.deinit();
-            self.allocator.destroy(self.child);
+            self.child.deinit(allocator);
+            allocator.destroy(self.child);
         }
 
-        pub fn build(self: *Scroll(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
+        pub fn build(self: *Scroll(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
             const child_constraint: layout.Constraint = switch (self.direction) {
                 .vert => .{
@@ -801,17 +793,17 @@ pub fn Scroll(comptime Widget: type) type {
                     .max_size = .{ .width = null, .height = null },
                 },
             };
-            try self.child.build(child_constraint, root_focus);
+            try self.child.build(allocator, child_constraint, root_focus);
             if (self.child.getGrid()) |child_grid| {
-                self.grid = try Grid.initFromGrid(self.allocator, child_grid, .{
+                self.grid = try Grid.initFromGrid(allocator, child_grid, .{
                     .width = @max(1, @min(child_grid.size.width, constraint.max_size.width orelse child_grid.size.width)),
                     .height = @max(1, @min(child_grid.size.height, constraint.max_size.height orelse child_grid.size.height)),
                 }, self.x, self.y);
             }
         }
 
-        pub fn input(self: *Scroll(Widget), key: inp.Key, root_focus: *Focus) !void {
-            try self.child.input(key, root_focus);
+        pub fn input(self: *Scroll(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
+            try self.child.input(allocator, key, root_focus);
         }
 
         pub fn clearGrid(self: *Scroll(Widget)) void {
@@ -864,38 +856,36 @@ pub fn Stack(comptime Widget: type) type {
     return struct {
         focus: Focus,
         children: std.AutoArrayHashMapUnmanaged(usize, Widget),
-        allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator) Stack(Widget) {
             return .{
                 .focus = Focus.init(allocator, .container),
                 .children = .empty,
-                .allocator = allocator,
             };
         }
 
-        pub fn deinit(self: *Stack(Widget)) void {
+        pub fn deinit(self: *Stack(Widget), allocator: std.mem.Allocator) void {
             self.focus.deinit();
             for (self.children.values()) |*child| {
-                child.deinit();
+                child.deinit(allocator);
             }
-            self.children.deinit(self.allocator);
+            self.children.deinit(allocator);
         }
 
-        pub fn build(self: *Stack(Widget), constraint: layout.Constraint, root_focus: *Focus) !void {
+        pub fn build(self: *Stack(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
             self.getFocus().clear();
             if (self.getSelected()) |selected_widget| {
-                try selected_widget.build(constraint, root_focus);
+                try selected_widget.build(allocator, constraint, root_focus);
                 if (selected_widget.getGrid()) |child_grid| {
                     try self.getFocus().addChild(selected_widget.getFocus(), child_grid.size, 0, 0);
                 }
             }
         }
 
-        pub fn input(self: *Stack(Widget), key: inp.Key, root_focus: *Focus) !void {
+        pub fn input(self: *Stack(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
             if (self.getSelected()) |selected_widget| {
-                try selected_widget.input(key, root_focus);
+                try selected_widget.input(allocator, key, root_focus);
             }
         }
 

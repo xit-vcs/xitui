@@ -686,7 +686,7 @@ pub fn renderToWriter(
 
     if (force_refresh) {
         // rebuild the root widget
-        try root_widget.build(.{
+        try root_widget.build(allocator, .{
             .min_size = .{ .width = null, .height = null },
             .max_size = .{ .width = size.width, .height = size.height },
         }, root_widget.getFocus());

@@ -13,21 +13,21 @@ pub const Widget = union(enum) {
     text_box: wgt.TextBox(Widget),
     scroll: wgt.Scroll(Widget),
 
-    pub fn deinit(self: *Widget) void {
+    pub fn deinit(self: *Widget, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            inline else => |*case| case.deinit(),
+            inline else => |*case| case.deinit(allocator),
         }
     }
 
-    pub fn build(self: *Widget, constraint: layout.Constraint, root_focus: *Focus) anyerror!void {
+    pub fn build(self: *Widget, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) anyerror!void {
         switch (self.*) {
-            inline else => |*case| try case.build(constraint, root_focus),
+            inline else => |*case| try case.build(allocator, constraint, root_focus),
         }
     }
 
-    pub fn input(self: *Widget, key: inp.Key, root_focus: *Focus) anyerror!void {
+    pub fn input(self: *Widget, allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) anyerror!void {
         switch (self.*) {
-            inline else => |*case| try case.input(key, root_focus),
+            inline else => |*case| try case.input(allocator, key, root_focus),
         }
     }
 
@@ -54,9 +54,9 @@ test "text box" {
     const allocator = std.testing.allocator;
 
     var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!", .{ .border_style = .single, .wrap_kind = .none }) };
-    defer widget.deinit();
+    defer widget.deinit(allocator);
 
-    try widget.build(.{
+    try widget.build(allocator, .{
         .min_size = .{ .width = null, .height = null },
         .max_size = .{ .width = null, .height = null },
     }, widget.getFocus());
@@ -75,9 +75,9 @@ test "text box with wrapping" {
     const allocator = std.testing.allocator;
 
     var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!\nGöödbye, world!", .{ .border_style = .single, .wrap_kind = .char }) };
-    defer widget.deinit();
+    defer widget.deinit(allocator);
 
-    try widget.build(.{
+    try widget.build(allocator, .{
         .min_size = .{ .width = null, .height = null },
         .max_size = .{ .width = 10, .height = null },
     }, widget.getFocus());
@@ -96,7 +96,7 @@ test "text box with wrapping" {
         , str);
     }
 
-    try widget.build(.{
+    try widget.build(allocator, .{
         .min_size = .{ .width = null, .height = null },
         .max_size = .{ .width = 12, .height = null },
     }, widget.getFocus());
@@ -115,7 +115,7 @@ test "text box with wrapping" {
         , str);
     }
 
-    try widget.build(.{
+    try widget.build(allocator, .{
         .min_size = .{ .width = null, .height = null },
         .max_size = .{ .width = 12, .height = null },
     }, widget.getFocus());
@@ -205,7 +205,7 @@ test "StreamTerminal renders a widget tree" {
     const startup_len = output.written().len;
 
     var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "hello", .{ .border_style = .single, .wrap_kind = .none }) };
-    defer widget.deinit();
+    defer widget.deinit(allocator);
 
     var last_size = layout.Size{ .width = 0, .height = 0 };
     var last_grid = try Grid.init(allocator, last_size);

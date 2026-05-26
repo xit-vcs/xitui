@@ -23,10 +23,10 @@ pub fn main() !void {
 
     // init root widget
     var root = Widget{ .widget_list = try WidgetList.init(allocator) };
-    defer root.deinit();
+    defer root.deinit(allocator);
 
     // set initial focus for root widget
-    try root.build(.{
+    try root.build(allocator, .{
         .min_size = .{ .width = null, .height = null },
         .max_size = .{ .width = 10, .height = 10 },
     }, root.getFocus());
@@ -59,7 +59,7 @@ pub fn main() !void {
         var blocking = !grid_changed;
         while (try terminal.readKey(io, blocking)) |key| {
             switch (key) {
-                .codepoint => |cp| if (cp == 'q') return else try root.input(key, root.getFocus()),
+                .codepoint => |cp| if (cp == 'q') return else try root.input(allocator, key, root.getFocus()),
                 .mouse => |mouse| {
                     if (mouse.action == .press and mouse.action.press == .left) {
                         const root_focus = root.getFocus();
@@ -76,16 +76,16 @@ pub fn main() !void {
                             }
                         }
                     } else {
-                        try root.input(key, root.getFocus());
+                        try root.input(allocator, key, root.getFocus());
                     }
                 },
-                else => try root.input(key, root.getFocus()),
+                else => try root.input(allocator, key, root.getFocus()),
             }
             blocking = false;
         }
 
         // rebuild widget
-        try root.build(.{
+        try root.build(allocator, .{
             .min_size = .{ .width = null, .height = null },
             .max_size = .{ .width = last_size.width, .height = last_size.height },
         }, root.getFocus());
@@ -96,78 +96,76 @@ pub fn main() !void {
 }
 
 const WidgetList = struct {
-    allocator: std.mem.Allocator,
     scroll: wgt.Scroll(Widget),
 
     pub fn init(allocator: std.mem.Allocator) !WidgetList {
         var self = blk: {
             var inner_box = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .vert });
-            errdefer inner_box.deinit();
+            errdefer inner_box.deinit(allocator);
 
             var scroll = try wgt.Scroll(Widget).init(allocator, .{ .box = inner_box }, .vert);
-            errdefer scroll.deinit();
+            errdefer scroll.deinit(allocator);
 
             break :blk WidgetList{
-                .allocator = allocator,
                 .scroll = scroll,
             };
         };
-        errdefer self.deinit();
+        errdefer self.deinit(allocator);
 
         const inner_box = &self.scroll.child.box;
 
         {
             var text_input = wgt.TextInput(Widget).init(allocator, .{ .label = "username" });
-            errdefer text_input.deinit();
+            errdefer text_input.deinit(allocator);
             text_input.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
         }
 
         {
             var text_input = wgt.TextInput(Widget).init(allocator, .{ .label = "password", .password = true });
-            errdefer text_input.deinit();
+            errdefer text_input.deinit(allocator);
             text_input.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
         }
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "this is a TextBox", .{ .border_style = .single, .wrap_kind = .none });
-            errdefer text_box.deinit();
+            errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "this is a\nmulti-line TextBox", .{ .border_style = .single, .wrap_kind = .none });
-            errdefer text_box.deinit();
+            errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "another TextBox", .{ .border_style = .single, .wrap_kind = .none });
-            errdefer text_box.deinit();
+            errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "also a TextBox", .{ .border_style = .single, .wrap_kind = .none });
-            errdefer text_box.deinit();
+            errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "yet another TextBox", .{ .border_style = .single, .wrap_kind = .none });
-            errdefer text_box.deinit();
+            errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
             var text_box = try wgt.TextBox(Widget).init(allocator, "one more TextBox", .{ .border_style = .single, .wrap_kind = .none });
-            errdefer text_box.deinit();
+            errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
@@ -179,11 +177,11 @@ const WidgetList = struct {
         return self;
     }
 
-    pub fn deinit(self: *WidgetList) void {
-        self.scroll.deinit();
+    pub fn deinit(self: *WidgetList, allocator: std.mem.Allocator) void {
+        self.scroll.deinit(allocator);
     }
 
-    pub fn build(self: *WidgetList, constraint: layout.Constraint, root_focus: *Focus) !void {
+    pub fn build(self: *WidgetList, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
         self.clearGrid();
         const children = &self.scroll.child.box.children;
         for (children.keys(), children.values()) |id, *commit| {
@@ -203,10 +201,10 @@ const WidgetList = struct {
                 else => {},
             }
         }
-        try self.scroll.build(constraint, root_focus);
+        try self.scroll.build(allocator, constraint, root_focus);
     }
 
-    pub fn input(self: *WidgetList, key: inp.Key, root_focus: *Focus) !void {
+    pub fn input(self: *WidgetList, allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
         if (self.getFocus().child_id) |child_id| {
             const children = &self.scroll.child.box.children;
             if (children.getIndex(child_id)) |current_index| {
@@ -216,7 +214,7 @@ const WidgetList = struct {
                 if (focused.* == .text_input) {
                     switch (key) {
                         .codepoint, .arrow_left, .arrow_right, .home, .end, .delete, .backspace => {
-                            try focused.input(key, root_focus);
+                            try focused.input(allocator, key, root_focus);
                             return;
                         },
                         else => {},
@@ -313,21 +311,21 @@ pub const Widget = union(enum) {
     scroll: wgt.Scroll(Widget),
     widget_list: WidgetList,
 
-    pub fn deinit(self: *Widget) void {
+    pub fn deinit(self: *Widget, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            inline else => |*case| case.deinit(),
+            inline else => |*case| case.deinit(allocator),
         }
     }
 
-    pub fn build(self: *Widget, constraint: layout.Constraint, root_focus: *Focus) anyerror!void {
+    pub fn build(self: *Widget, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) anyerror!void {
         switch (self.*) {
-            inline else => |*case| try case.build(constraint, root_focus),
+            inline else => |*case| try case.build(allocator, constraint, root_focus),
         }
     }
 
-    pub fn input(self: *Widget, key: inp.Key, root_focus: *Focus) anyerror!void {
+    pub fn input(self: *Widget, allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) anyerror!void {
         switch (self.*) {
-            inline else => |*case| try case.input(key, root_focus),
+            inline else => |*case| try case.input(allocator, key, root_focus),
         }
     }
 
