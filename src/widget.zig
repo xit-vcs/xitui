@@ -228,6 +228,31 @@ pub fn Box(comptime Widget: type) type {
                     }
                 }
 
+                // propagate whatever's left of our parent's min-size to the
+                // last child along our primary axis
+                if (sorted_child_index + 1 == sorted_children.count()) {
+                    switch (self.options.direction) {
+                        .vert => if (constraint.min_size.height) |min_h| {
+                            const inner_min = if (min_h > border_size * 2) min_h - border_size * 2 else 0;
+                            if (inner_min > height) {
+                                const remaining = inner_min - height;
+                                if (remaining > (child_min_size.height orelse 0)) {
+                                    child_min_size.height = remaining;
+                                }
+                            }
+                        },
+                        .horiz => if (constraint.min_size.width) |min_w| {
+                            const inner_min = if (min_w > border_size * 2) min_w - border_size * 2 else 0;
+                            if (inner_min > width) {
+                                const remaining = inner_min - width;
+                                if (remaining > (child_min_size.width orelse 0)) {
+                                    child_min_size.width = remaining;
+                                }
+                            }
+                        },
+                    }
+                }
+
                 try child.widget.build(allocator, .{
                     .min_size = child_min_size,
                     .max_size = .{ .width = expected_remaining_width_maybe, .height = expected_remaining_height_maybe },
