@@ -298,6 +298,7 @@ pub const Core = switch (builtin.os.tag) {
                             if (cp == 8 or cp == 127) return .backspace;
                             if (cp == 13 or cp == 10) return .enter;
                             if (cp == 9) return .tab;
+                            if (cp == 0x1B) return .escape;
                             return .{ .codepoint = cp };
                         }
                         // otherwise it's a non-printable key. key codes are listed here:
@@ -977,12 +978,19 @@ pub const EscapeParser = struct {
         else {
             if ('\x1B' == codepoint) {
                 if (next_byte_maybe) |next_byte| {
-                    // sequence must start with [
-                    if (next_byte == '[') {
+                    // `[` opens a CSI sequence (arrows, page keys, mouse,
+                    // etc.). `O` opens an SS3 sequence — most modern
+                    // terminals use it for F1–F4 (ESC O P/Q/R/S) and for
+                    // arrow keys in application-keypad mode. either way,
+                    // we buffer the ESC and let the existing terminator
+                    // switch dispatch on whatever ends the sequence.
+                    if (next_byte == '[' or next_byte == 'O') {
                         self.esc_buffer.appendAssumeCapacity('\x1B');
                         return null;
                     }
                 }
+                // bare ESC — the user pressed the Escape key itself.
+                return .escape;
             }
             if (codepoint == 8 or codepoint == 127) return .backspace;
             if (codepoint == 13 or codepoint == 10) return .enter;

@@ -13,6 +13,7 @@ pub const Key = union(enum) {
     enter,
     tab,
     back_tab,
+    escape,
     codepoint: u21,
     mouse: Mouse,
     event: enum {
