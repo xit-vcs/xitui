@@ -613,6 +613,8 @@ pub fn TextInput(comptime Widget: type) type {
             var grid = try Grid.init(allocator, .{ .width = width, .height = height });
             errdefer grid.deinit();
 
+            const has_focus = root_focus.grandchild_id == self.focus.id;
+
             // text + cursor
             for (0..inner_width) |i| {
                 const content_index = self.scroll_offset + i;
@@ -621,11 +623,11 @@ pub fn TextInput(comptime Widget: type) type {
                 const cell_idx = try grid.cells.at(.{ cell_y, cell_x });
                 if (content_index < self.content.items.len) {
                     grid.cells.items[cell_idx].rune = if (self.options.password) "•" else self.content.items[content_index];
-                } else if (content_index == self.content.items.len and self.cursor == content_index) {
+                } else if (content_index == self.content.items.len and self.cursor == content_index and has_focus) {
                     // cursor sits past the last char — paint a space underneath
                     grid.cells.items[cell_idx].rune = " ";
                 }
-                if (content_index == self.cursor) {
+                if (content_index == self.cursor and has_focus) {
                     grid.cells.items[cell_idx].style.inverted = true;
                     if (grid.cells.items[cell_idx].rune == null) {
                         grid.cells.items[cell_idx].rune = " ";
