@@ -605,6 +605,19 @@ pub fn TextInput(comptime Widget: type) type {
             self.scroll_offset = 0;
         }
 
+        // concatenates the stored codepoint slices into a single owned buffer
+        pub fn text(self: *const TextInput(Widget), allocator: std.mem.Allocator) ![]u8 {
+            var total: usize = 0;
+            for (self.content.items) |cp| total += cp.len;
+            const buf = try allocator.alloc(u8, total);
+            var i: usize = 0;
+            for (self.content.items) |cp| {
+                @memcpy(buf[i .. i + cp.len], cp);
+                i += cp.len;
+            }
+            return buf;
+        }
+
         pub fn build(self: *TextInput(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
 
