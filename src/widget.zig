@@ -511,7 +511,13 @@ pub fn TextBox(comptime Widget: type) type {
             }
 
             self.clearGrid();
-            self.box.options.border_style = self.options.border_style;
+            // update border to reflect focus
+            const focused = root_focus.grandchild_id == self.getFocus().id;
+            self.box.options.border_style = if (self.options.border_style) |base| switch (base) {
+                .single => if (focused) .double else .single,
+                .single_dashed => if (focused) .double_dashed else .single_dashed,
+                .hidden, .double, .double_dashed => base,
+            } else null;
             self.box.options.rounded_corners = self.options.rounded_corners;
             try self.box.build(allocator, constraint, root_focus);
         }

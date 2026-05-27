@@ -183,24 +183,6 @@ const WidgetList = struct {
 
     pub fn build(self: *WidgetList, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
         self.clearGrid();
-        const children = &self.scroll.child.box.children;
-        for (children.keys(), children.values()) |id, *commit| {
-            switch (commit.widget) {
-                .text_box => |*tb| {
-                    tb.options.border_style = if (self.getFocus().child_id == id)
-                        (if (root_focus.grandchild_id == id) .double else .single)
-                    else
-                        .hidden;
-                },
-                .text_input => |*ti| {
-                    ti.options.border_style = if (self.getFocus().child_id == id)
-                        .single_dashed
-                    else
-                        .hidden;
-                },
-                else => {},
-            }
-        }
         try self.scroll.build(allocator, constraint, root_focus);
     }
 
