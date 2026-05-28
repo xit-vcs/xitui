@@ -24,10 +24,9 @@ pub const Focus = struct {
     child_id: ?usize,
     grandchild_id: ?usize,
     focusable: bool,
-    allocator: std.mem.Allocator,
     children: std.AutoArrayHashMapUnmanaged(usize, Child),
 
-    pub fn init(allocator: std.mem.Allocator, kind: FocusKind) Focus {
+    pub fn init(kind: FocusKind) Focus {
         const id = next_id;
         next_id += 1;
         return .{
@@ -36,17 +35,16 @@ pub const Focus = struct {
             .child_id = null,
             .grandchild_id = null,
             .focusable = false,
-            .allocator = allocator,
             .children = .empty,
         };
     }
 
-    pub fn deinit(self: *Focus) void {
-        self.children.deinit(self.allocator);
+    pub fn deinit(self: *Focus, allocator: std.mem.Allocator) void {
+        self.children.deinit(allocator);
     }
 
-    pub fn addChild(self: *Focus, child: *Focus, size: layout.Size, target_x: usize, target_y: usize) !void {
-        try self.children.put(self.allocator, child.id, .{
+    pub fn addChild(self: *Focus, allocator: std.mem.Allocator, child: *Focus, size: layout.Size, target_x: usize, target_y: usize) !void {
+        try self.children.put(allocator, child.id, .{
             .parent_id = self.id,
             .focus = child,
             .rect = .{ .x = target_x, .y = target_y, .size = size },
@@ -54,7 +52,7 @@ pub const Focus = struct {
         var iter = child.children.iterator();
         while (iter.next()) |entry| {
             const grandchild = entry.value_ptr.*;
-            try self.children.put(self.allocator, entry.key_ptr.*, .{
+            try self.children.put(allocator, entry.key_ptr.*, .{
                 .parent_id = grandchild.parent_id,
                 .focus = grandchild.focus,
                 .rect = .{ .x = target_x + grandchild.rect.x, .y = target_y + grandchild.rect.y, .size = grandchild.rect.size },

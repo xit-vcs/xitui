@@ -10,17 +10,16 @@ pub fn Text(comptime Widget: type) type {
         grid: ?Grid,
         content: []const u8,
 
-        pub fn init(allocator: std.mem.Allocator, content: []const u8) Text(Widget) {
+        pub fn init(content: []const u8) Text(Widget) {
             return .{
-                .focus = Focus.init(allocator, .text),
+                .focus = Focus.init(.text),
                 .grid = null,
                 .content = content,
             };
         }
 
         pub fn deinit(self: *Text(Widget), allocator: std.mem.Allocator) void {
-            _ = allocator;
-            self.focus.deinit();
+            self.focus.deinit(allocator);
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
@@ -101,9 +100,9 @@ pub fn Box(comptime Widget: type) type {
             direction: Direction,
         };
 
-        pub fn init(allocator: std.mem.Allocator, options: Options) !Box(Widget) {
+        pub fn init(options: Options) Box(Widget) {
             return .{
-                .focus = Focus.init(allocator, .container),
+                .focus = Focus.init(.container),
                 .grid = null,
                 .children = .empty,
                 .options = options,
@@ -111,7 +110,7 @@ pub fn Box(comptime Widget: type) type {
         }
 
         pub fn deinit(self: *Box(Widget), allocator: std.mem.Allocator) void {
-            self.focus.deinit();
+            self.focus.deinit(allocator);
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
@@ -291,10 +290,10 @@ pub fn Box(comptime Widget: type) type {
                         if (child.widget.getGrid()) |child_grid| {
                             child.rect = .{ .x = 0, .y = @as(isize, @intCast(line + border_size)), .size = child_grid.size };
                             try grid.drawGrid(child_grid, border_size, line + border_size);
-                            try self.getFocus().addChild(child.widget.getFocus(), child_grid.size, border_size, line + border_size);
+                            try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, border_size, line + border_size);
                             line += child_grid.size.height;
                         } else {
-                            try self.getFocus().addChild(child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
+                            try self.getFocus().addChild(allocator, child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
                         }
                     }
                 },
@@ -304,10 +303,10 @@ pub fn Box(comptime Widget: type) type {
                         if (child.widget.getGrid()) |child_grid| {
                             child.rect = .{ .x = @as(isize, @intCast(col + border_size)), .y = 0, .size = child_grid.size };
                             try grid.drawGrid(child_grid, col + border_size, border_size);
-                            try self.getFocus().addChild(child.widget.getFocus(), child_grid.size, col + border_size, border_size);
+                            try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, col + border_size, border_size);
                             col += child_grid.size.width;
                         } else {
-                            try self.getFocus().addChild(child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
+                            try self.getFocus().addChild(allocator, child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
                         }
                     }
                 },
@@ -438,11 +437,11 @@ pub fn TextBox(comptime Widget: type) type {
                 try lines.append(allocator, try line.toOwnedSlice(allocator));
             }
 
-            var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert });
+            var box = Box(Widget).init(.{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert });
             errdefer box.deinit(allocator);
             box.getFocus().kind = .text_box;
             for (lines.items) |line| {
-                var text = Text(Widget).init(allocator, line);
+                var text = Text(Widget).init(line);
                 errdefer text.deinit(allocator);
                 try box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
             }
@@ -498,11 +497,11 @@ pub fn TextBox(comptime Widget: type) type {
                             }
                         }
 
-                        const box = try Box(Widget).init(allocator, .{ .border_style = self.options.border_style, .rounded_corners = self.options.rounded_corners, .direction = .vert });
+                        const box = Box(Widget).init(.{ .border_style = self.options.border_style, .rounded_corners = self.options.rounded_corners, .direction = .vert });
                         self.box.deinit(allocator);
                         self.box = box;
                         for (self.lines.items) |line| {
-                            var text = Text(Widget).init(allocator, line);
+                            var text = Text(Widget).init(line);
                             errdefer text.deinit(allocator);
                             try self.box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
                         }
@@ -565,9 +564,9 @@ pub fn TextInput(comptime Widget: type) type {
             name: []const u8 = "",
         };
 
-        pub fn init(allocator: std.mem.Allocator, options: Options) TextInput(Widget) {
+        pub fn init(options: Options) TextInput(Widget) {
             return .{
-                .focus = Focus.init(allocator, if (options.password) .text_input_password else .text_input),
+                .focus = Focus.init(if (options.password) .text_input_password else .text_input),
                 .grid = null,
                 .content = .empty,
                 .cursor = 0,
@@ -577,7 +576,7 @@ pub fn TextInput(comptime Widget: type) type {
         }
 
         pub fn deinit(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
-            self.focus.deinit();
+            self.focus.deinit(allocator);
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
@@ -903,15 +902,15 @@ pub fn Stack(comptime Widget: type) type {
         focus: Focus,
         children: std.AutoArrayHashMapUnmanaged(usize, Widget),
 
-        pub fn init(allocator: std.mem.Allocator) Stack(Widget) {
+        pub fn init() Stack(Widget) {
             return .{
-                .focus = Focus.init(allocator, .container),
+                .focus = Focus.init(.container),
                 .children = .empty,
             };
         }
 
         pub fn deinit(self: *Stack(Widget), allocator: std.mem.Allocator) void {
-            self.focus.deinit();
+            self.focus.deinit(allocator);
             for (self.children.values()) |*child| {
                 child.deinit(allocator);
             }
@@ -924,7 +923,7 @@ pub fn Stack(comptime Widget: type) type {
             if (self.getSelected()) |selected_widget| {
                 try selected_widget.build(allocator, constraint, root_focus);
                 if (selected_widget.getGrid()) |child_grid| {
-                    try self.getFocus().addChild(selected_widget.getFocus(), child_grid.size, 0, 0);
+                    try self.getFocus().addChild(allocator, selected_widget.getFocus(), child_grid.size, 0, 0);
                 }
             }
         }
