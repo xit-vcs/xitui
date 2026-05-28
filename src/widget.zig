@@ -87,6 +87,7 @@ pub fn Box(comptime Widget: type) type {
             widget: Widget,
             rect: ?layout.IRect,
             min_size: ?layout.MaybeSize,
+            max_size: ?layout.MaybeSize = null,
         };
 
         pub const Direction = enum {
@@ -252,9 +253,15 @@ pub fn Box(comptime Widget: type) type {
                     }
                 }
 
+                // clamp the granted max size by any per-child cap so the
+                // child can't grow past its declared limit even if there's
+                // more room available in the parent.
+                const child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
+                const child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
+
                 try child.widget.build(allocator, .{
                     .min_size = child_min_size,
-                    .max_size = .{ .width = expected_remaining_width_maybe, .height = expected_remaining_height_maybe },
+                    .max_size = .{ .width = child_max_width, .height = child_max_height },
                 }, root_focus);
 
                 if (child.widget.getGrid()) |child_grid| {
@@ -386,6 +393,14 @@ pub fn Box(comptime Widget: type) type {
 
         pub fn getFocus(self: *Box(Widget)) *Focus {
             return &self.focus;
+        }
+
+        fn clampMax(parent_max: ?usize, child_max: ?usize) ?usize {
+            if (parent_max) |p| {
+                if (child_max) |c| return @min(p, c);
+                return p;
+            }
+            return child_max;
         }
     };
 }
