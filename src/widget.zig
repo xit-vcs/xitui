@@ -392,7 +392,11 @@ pub fn Box(comptime Widget: type) type {
 
 pub const WrapKind = enum {
     none,
+    // break lines anywhere; one codepoint past the edge wraps to the next row
     char,
+    // break lines at whitespace; a single token longer than the line falls
+    // back to char-wrapping just that token
+    word,
 };
 
 pub fn TextBox(comptime Widget: type) type {
@@ -464,37 +468,79 @@ pub fn TextBox(comptime Widget: type) type {
         }
 
         pub fn build(self: *TextBox(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
-            if (.char == self.options.wrap_kind) {
+            if (self.options.wrap_kind != .none) {
                 if (constraint.max_size.width) |max_width| {
                     const should_rewrap = if (self.last_wrap_width) |last_wrap_width| last_wrap_width != max_width else true;
                     self.last_wrap_width = max_width;
 
                     if (should_rewrap) {
                         const border_size: usize = if (self.options.border_style) |_| 1 else 0;
+                        const inner_width: usize = if (max_width > border_size * 2) max_width - border_size * 2 else 0;
 
-                        {
-                            for (self.lines.items) |line| {
-                                allocator.free(line);
-                            }
-                            self.lines.clearAndFree(allocator);
+                        for (self.lines.items) |line| allocator.free(line);
+                        self.lines.clearAndFree(allocator);
 
-                            var line: std.ArrayList(u8) = .empty;
-                            errdefer line.deinit(allocator);
+                        switch (self.options.wrap_kind) {
+                            .none => unreachable,
+                            .char => {
+                                var line: std.ArrayList(u8) = .empty;
+                                errdefer line.deinit(allocator);
 
-                            var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
-                            while (utf8.nextCodepointSlice()) |char| {
-                                if (std.mem.eql(u8, char, "\n")) {
-                                    try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                } else {
-                                    try line.appendSlice(allocator, char);
+                                var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
+                                while (utf8.nextCodepointSlice()) |char| {
+                                    if (std.mem.eql(u8, char, "\n")) {
+                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                    } else {
+                                        try line.appendSlice(allocator, char);
+                                    }
+
+                                    if (std.mem.eql(u8, utf8.peek(1), "")) {
+                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                    } else if (try std.unicode.utf8CountCodepoints(line.items) == inner_width) {
+                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                    }
                                 }
+                            },
+                            .word => {
+                                var line: std.ArrayList(u8) = .empty;
+                                errdefer line.deinit(allocator);
+                                var line_cp: usize = 0;
 
-                                if (std.mem.eql(u8, utf8.peek(1), "")) {
-                                    try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                } else if (try std.unicode.utf8CountCodepoints(line.items) + (border_size * 2) == max_width) {
-                                    try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                var word: std.ArrayList(u8) = .empty;
+                                defer word.deinit(allocator);
+                                var word_cp: usize = 0;
+
+                                var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
+                                while (utf8.nextCodepointSlice()) |cp| {
+                                    const is_newline = std.mem.eql(u8, cp, "\n");
+                                    const is_space = std.mem.eql(u8, cp, " ") or std.mem.eql(u8, cp, "\t");
+
+                                    if (is_newline or is_space) {
+                                        try flushPendingWord(allocator, &self.lines, &line, &line_cp, &word, &word_cp, inner_width);
+                                    }
+
+                                    if (is_newline) {
+                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                        line_cp = 0;
+                                    } else if (is_space) {
+                                        // collapse spaces at the start of a line; otherwise keep
+                                        // the separator and drop trailing spaces past the edge.
+                                        if (line_cp > 0 and line_cp < inner_width) {
+                                            try line.appendSlice(allocator, cp);
+                                            line_cp += 1;
+                                        }
+                                    } else {
+                                        try word.appendSlice(allocator, cp);
+                                        word_cp += 1;
+                                    }
+
+                                    if (std.mem.eql(u8, utf8.peek(1), "")) {
+                                        try flushPendingWord(allocator, &self.lines, &line, &line_cp, &word, &word_cp, inner_width);
+                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                        line_cp = 0;
+                                    }
                                 }
-                            }
+                            },
                         }
 
                         // refresh the inner box's children in-place
@@ -535,6 +581,50 @@ pub fn TextBox(comptime Widget: type) type {
 
         pub fn getFocus(self: *TextBox(Widget)) *Focus {
             return self.box.getFocus();
+        }
+
+        fn flushPendingWord(
+            allocator: std.mem.Allocator,
+            lines: *std.ArrayList([]const u8),
+            line: *std.ArrayList(u8),
+            line_cp: *usize,
+            word: *std.ArrayList(u8),
+            word_cp: *usize,
+            inner_width: usize,
+        ) !void {
+            if (word_cp.* == 0) return;
+
+            if (line_cp.* + word_cp.* <= inner_width) {
+                try line.appendSlice(allocator, word.items);
+                line_cp.* += word_cp.*;
+            } else if (word_cp.* <= inner_width) {
+                // wrap to a fresh line so the word stays intact
+                if (line_cp.* > 0) {
+                    try lines.append(allocator, try line.toOwnedSlice(allocator));
+                    line_cp.* = 0;
+                }
+                try line.appendSlice(allocator, word.items);
+                line_cp.* = word_cp.*;
+            } else {
+                // word is longer than a whole line — fall back to char-wrap so
+                // it at least renders rather than disappearing past the edge.
+                if (line_cp.* > 0) {
+                    try lines.append(allocator, try line.toOwnedSlice(allocator));
+                    line_cp.* = 0;
+                }
+                var w_utf8 = (try std.unicode.Utf8View.init(word.items)).iterator();
+                while (w_utf8.nextCodepointSlice()) |c| {
+                    if (line_cp.* == inner_width) {
+                        try lines.append(allocator, try line.toOwnedSlice(allocator));
+                        line_cp.* = 0;
+                    }
+                    try line.appendSlice(allocator, c);
+                    line_cp.* += 1;
+                }
+            }
+
+            word.clearRetainingCapacity();
+            word_cp.* = 0;
         }
     };
 }
