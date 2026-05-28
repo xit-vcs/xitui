@@ -497,9 +497,9 @@ pub fn TextBox(comptime Widget: type) type {
                             }
                         }
 
-                        const box = Box(Widget).init(.{ .border_style = self.options.border_style, .rounded_corners = self.options.rounded_corners, .direction = .vert });
-                        self.box.deinit(allocator);
-                        self.box = box;
+                        // refresh the inner box's children in-place
+                        for (self.box.children.values()) |*child| child.widget.deinit(allocator);
+                        self.box.children.clearAndFree(allocator);
                         for (self.lines.items) |line| {
                             var text = Text(Widget).init(line);
                             errdefer text.deinit(allocator);
