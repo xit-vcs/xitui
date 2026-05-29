@@ -667,6 +667,8 @@ pub fn TextInput(comptime Widget: type) type {
             // optional form-field name; the web renderer emits it as the
             // HTML `name` attribute so the value is submitted with that key.
             name: []const u8 = "",
+            // when false, the content (and cursor) aren't drawn into the grid
+            render_content: bool = true,
         };
 
         pub fn init(options: Options) TextInput(Widget) {
@@ -763,22 +765,24 @@ pub fn TextInput(comptime Widget: type) type {
 
             const has_focus = root_focus.grandchild_id == self.focus.id;
 
-            // text + cursor
-            for (0..inner_width) |i| {
-                const content_index = self.scroll_offset + i;
-                const cell_x = i + border_size;
-                const cell_y = border_size;
-                const cell_idx = try grid.cells.at(.{ cell_y, cell_x });
-                if (content_index < self.content.items.len) {
-                    grid.cells.items[cell_idx].rune = if (self.options.password) "•" else self.content.items[content_index];
-                } else if (content_index == self.content.items.len and self.cursor == content_index and has_focus) {
-                    // cursor sits past the last char — paint a space underneath
-                    grid.cells.items[cell_idx].rune = " ";
-                }
-                if (content_index == self.cursor and has_focus) {
-                    grid.cells.items[cell_idx].style.inverted = true;
-                    if (grid.cells.items[cell_idx].rune == null) {
+            // text + cursor (skipped when an external overlay owns the display)
+            if (self.options.render_content) {
+                for (0..inner_width) |i| {
+                    const content_index = self.scroll_offset + i;
+                    const cell_x = i + border_size;
+                    const cell_y = border_size;
+                    const cell_idx = try grid.cells.at(.{ cell_y, cell_x });
+                    if (content_index < self.content.items.len) {
+                        grid.cells.items[cell_idx].rune = if (self.options.password) "•" else self.content.items[content_index];
+                    } else if (content_index == self.content.items.len and self.cursor == content_index and has_focus) {
+                        // cursor sits past the last char — paint a space underneath
                         grid.cells.items[cell_idx].rune = " ";
+                    }
+                    if (content_index == self.cursor and has_focus) {
+                        grid.cells.items[cell_idx].style.inverted = true;
+                        if (grid.cells.items[cell_idx].rune == null) {
+                            grid.cells.items[cell_idx].rune = " ";
+                        }
                     }
                 }
             }
