@@ -8,11 +8,36 @@ pub const Grid = struct {
     cells: Cells,
     buffer: []Grid.Cell,
 
+    pub const Color = struct {
+        r: u8,
+        g: u8,
+        b: u8,
+
+        pub fn eql(self: Color, other: Color) bool {
+            return self.r == other.r and self.g == other.g and self.b == other.b;
+        }
+    };
+
     pub const Style = struct {
         inverted: bool = false,
+        // truecolor foreground/background. null means "leave the terminal
+        // default", which is how transparency is expressed: a cell with no bg
+        // lets whatever is behind it (the terminal background) show through.
+        fg: ?Color = null,
+        bg: ?Color = null,
 
         pub fn eql(self: Style, other: Style) bool {
-            return self.inverted == other.inverted;
+            if (self.inverted != other.inverted) return false;
+            if (!optColorEql(self.fg, other.fg)) return false;
+            if (!optColorEql(self.bg, other.bg)) return false;
+            return true;
+        }
+
+        fn optColorEql(a: ?Color, b: ?Color) bool {
+            if (a) |av| {
+                return if (b) |bv| av.eql(bv) else false;
+            }
+            return b == null;
         }
     };
 

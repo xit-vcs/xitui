@@ -750,12 +750,25 @@ pub fn renderToWriter(
 }
 
 fn writeAt(writer: *std.Io.Writer, txt: []const u8, style: grd.Grid.Style, x: usize, y: usize, height: usize) !void {
-    if (y < height) {
-        try moveCursor(writer, x, y);
-        if (style.inverted) try writer.writeAll("\x1B[7m");
-        try writer.writeAll(txt);
-        if (style.inverted) try writer.writeAll("\x1B[27m");
+    if (y >= height) return;
+    try moveCursor(writer, x, y);
+    // each cell re-establishes its own style, so a single reset afterward is
+    // enough to keep it from bleeding into the next cell we move to.
+    var styled = false;
+    if (style.inverted) {
+        try writer.writeAll("\x1B[7m");
+        styled = true;
     }
+    if (style.fg) |c| {
+        try writer.print("\x1B[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
+        styled = true;
+    }
+    if (style.bg) |c| {
+        try writer.print("\x1B[48;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
+        styled = true;
+    }
+    try writer.writeAll(txt);
+    if (styled) try writer.writeAll("\x1B[0m");
 }
 
 pub fn moveCursor(writer: *std.Io.Writer, x: usize, y: usize) !void {
