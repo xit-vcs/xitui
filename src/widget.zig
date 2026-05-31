@@ -179,10 +179,8 @@ pub fn Box(comptime Widget: type) type {
             var remaining_height_maybe = if (constraint.max_size.height) |max_height| max_height - (border_size * 2) else null;
 
             // budget for flex-shrink children along the main axis: the inner
-            // width (height) left once every other child has its minimum. each
-            // shrink child is capped to this below, so it clips before the box
-            // has to drop a sibling. null when there's no shrink child or the
-            // main axis is unbounded.
+            // size left once every other child has its minimum. null when there's
+            // no shrink child or the main axis is unbounded.
             const shrink_budget: ?usize = blk: {
                 var any_shrink = false;
                 for (self.children.values()) |child| {
@@ -209,6 +207,36 @@ pub fn Box(comptime Widget: type) type {
                 }
                 break :blk main_remaining -| others;
             };
+
+            // measure each flex-shrink child at the budget, then pin it to the
+            // result (min == max). for the rest of the layout it then behaves like
+            // a fixed-size child: siblings reserve room for it and it can't
+            // over-consume, regardless of the order children get built in.
+            // measuring (building at the budget) yields min(natural, budget), so
+            // the child clips when the leftover is tight and disappears at zero —
+            // yielding before any sibling is dropped.
+            if (shrink_budget) |budget| {
+                for (self.children.values()) |*child| {
+                    if (!child.shrink) continue;
+                    const measure_max: layout.MaybeSize = switch (self.options.direction) {
+                        .horiz => .{ .width = budget, .height = remaining_height_maybe },
+                        .vert => .{ .width = remaining_width_maybe, .height = budget },
+                    };
+                    try child.widget.build(allocator, .{
+                        .min_size = .{ .width = null, .height = null },
+                        .max_size = measure_max,
+                    }, root_focus);
+                    const measured: usize = if (child.widget.getGrid()) |grid| switch (self.options.direction) {
+                        .horiz => grid.size.width,
+                        .vert => grid.size.height,
+                    } else 0;
+                    child.min_size = switch (self.options.direction) {
+                        .horiz => .{ .width = measured, .height = null },
+                        .vert => .{ .width = null, .height = measured },
+                    };
+                    child.max_size = child.min_size;
+                }
+            }
 
             for (sorted_children.keys(), 0..) |child_index, sorted_child_index| {
                 var child = &self.children.values()[child_index];
@@ -301,17 +329,8 @@ pub fn Box(comptime Widget: type) type {
                 // clamp the granted max size by any per-child cap so the
                 // child can't grow past its declared limit even if there's
                 // more room available in the parent.
-                var child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
-                var child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
-
-                // a shrink child is additionally capped to the leftover after
-                // its siblings' minimums, so it yields to them along the main axis.
-                if (child.shrink) {
-                    if (shrink_budget) |budget| switch (self.options.direction) {
-                        .horiz => child_max_width = clampMax(child_max_width, budget),
-                        .vert => child_max_height = clampMax(child_max_height, budget),
-                    };
-                }
+                const child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
+                const child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
 
                 try child.widget.build(allocator, .{
                     .min_size = child_min_size,
