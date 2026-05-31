@@ -95,10 +95,12 @@ pub fn Box(comptime Widget: type) type {
             rect: ?layout.IRect,
             min_size: ?layout.MaybeSize,
             max_size: ?layout.MaybeSize = null,
-            // flex-shrink: a shrink child yields the main-axis space its
-            // siblings need, taking only the leftover after their minimums and
-            // clipping to it. it should carry no min_size so it can shrink to
-            // (and past) nothing rather than forcing the box to drop a sibling.
+            // flex-shrink: a shrink child yields main-axis space to its
+            // siblings, taking only the leftover after their minimums and
+            // clipping to it (to nothing if need be). the box measures the child
+            // at that budget and pins its size for the rest of layout, so it
+            // behaves as a fixed-size child here — leave min_size/max_size null;
+            // they're overwritten.
             shrink: bool = false,
         };
 
@@ -262,38 +264,36 @@ pub fn Box(comptime Widget: type) type {
                     }
                 }
 
-                // make room for the next children if they have min sizes
+                // reserve room for the children built after this one so a greedy
+                // child (e.g. a Spacer that fills its max) leaves space for their
+                // minimums rather than starving them. this runs for every child: a
+                // child with no min_size of its own reserves as if that minimum
+                // were 0, so a fill widget needn't declare a min just to be a
+                // well-behaved sibling.
                 var expected_remaining_width_maybe = remaining_width_maybe;
                 var expected_remaining_height_maybe = remaining_height_maybe;
-                var child_min_size: layout.MaybeSize = .{ .width = null, .height = null };
-                if (child.min_size) |min_size| {
-                    child_min_size = min_size;
-                    if (expected_remaining_width_maybe) |*expected_remaining_width| {
-                        if (min_size.width) |min_width| {
-                            for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
-                                const next_child_index = sorted_children.keys()[next_sorted_child_index];
-                                const next_child = &self.children.values()[next_child_index];
-                                if (next_child.min_size) |next_min_size| {
-                                    if (next_min_size.width) |next_min_width| {
-                                        if (expected_remaining_width.* >= min_width + next_min_width) {
-                                            expected_remaining_width.* -= next_min_width;
-                                        }
-                                    }
+                var child_min_size: layout.MaybeSize = child.min_size orelse .{ .width = null, .height = null };
+                if (expected_remaining_width_maybe) |*expected_remaining_width| {
+                    const self_min_width = child_min_size.width orelse 0;
+                    for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
+                        const next_child = &self.children.values()[sorted_children.keys()[next_sorted_child_index]];
+                        if (next_child.min_size) |next_min_size| {
+                            if (next_min_size.width) |next_min_width| {
+                                if (expected_remaining_width.* >= self_min_width + next_min_width) {
+                                    expected_remaining_width.* -= next_min_width;
                                 }
                             }
                         }
                     }
-                    if (expected_remaining_height_maybe) |*expected_remaining_height| {
-                        if (min_size.height) |min_height| {
-                            for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
-                                const next_child_index = sorted_children.keys()[next_sorted_child_index];
-                                const next_child = &self.children.values()[next_child_index];
-                                if (next_child.min_size) |next_min_size| {
-                                    if (next_min_size.height) |next_min_height| {
-                                        if (expected_remaining_height.* >= min_height + next_min_height) {
-                                            expected_remaining_height.* -= next_min_height;
-                                        }
-                                    }
+                }
+                if (expected_remaining_height_maybe) |*expected_remaining_height| {
+                    const self_min_height = child_min_size.height orelse 0;
+                    for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
+                        const next_child = &self.children.values()[sorted_children.keys()[next_sorted_child_index]];
+                        if (next_child.min_size) |next_min_size| {
+                            if (next_min_size.height) |next_min_height| {
+                                if (expected_remaining_height.* >= self_min_height + next_min_height) {
+                                    expected_remaining_height.* -= next_min_height;
                                 }
                             }
                         }
