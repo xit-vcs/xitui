@@ -29,6 +29,13 @@ pub fn Text(comptime Widget: type) type {
         pub fn build(self: *Text(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             _ = root_focus;
             self.clearGrid();
+            // a zero-width or zero-height budget means render nothing
+            if (constraint.max_size.width) |max_width| {
+                if (max_width == 0) return;
+            }
+            if (constraint.max_size.height) |max_height| {
+                if (max_height == 0) return;
+            }
             const width = try std.unicode.utf8CountCodepoints(self.content);
             var grid = try Grid.init(allocator, .{ .width = @max(1, @min(width, constraint.max_size.width orelse width)), .height = 1 });
             errdefer grid.deinit();
