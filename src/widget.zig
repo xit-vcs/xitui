@@ -88,6 +88,11 @@ pub fn Box(comptime Widget: type) type {
             rect: ?layout.IRect,
             min_size: ?layout.MaybeSize,
             max_size: ?layout.MaybeSize = null,
+            // flex-shrink: a shrink child yields the main-axis space its
+            // siblings need, taking only the leftover after their minimums and
+            // clipping to it. it should carry no min_size so it can shrink to
+            // (and past) nothing rather than forcing the box to drop a sibling.
+            shrink: bool = false,
         };
 
         pub const Direction = enum {
@@ -166,6 +171,38 @@ pub fn Box(comptime Widget: type) type {
             var remaining_width_maybe = if (constraint.max_size.width) |max_width| max_width - (border_size * 2) else null;
             var remaining_height_maybe = if (constraint.max_size.height) |max_height| max_height - (border_size * 2) else null;
 
+            // budget for flex-shrink children along the main axis: the inner
+            // width (height) left once every other child has its minimum. each
+            // shrink child is capped to this below, so it clips before the box
+            // has to drop a sibling. null when there's no shrink child or the
+            // main axis is unbounded.
+            const shrink_budget: ?usize = blk: {
+                var any_shrink = false;
+                for (self.children.values()) |child| {
+                    if (child.shrink) {
+                        any_shrink = true;
+                        break;
+                    }
+                }
+                if (!any_shrink) break :blk null;
+                const main_remaining = switch (self.options.direction) {
+                    .horiz => remaining_width_maybe,
+                    .vert => remaining_height_maybe,
+                } orelse break :blk null;
+                var others: usize = 0;
+                for (self.children.values()) |child| {
+                    if (child.shrink) continue;
+                    if (child.min_size) |min_size| {
+                        const min_main = switch (self.options.direction) {
+                            .horiz => min_size.width,
+                            .vert => min_size.height,
+                        };
+                        others += min_main orelse 0;
+                    }
+                }
+                break :blk main_remaining -| others;
+            };
+
             for (sorted_children.keys(), 0..) |child_index, sorted_child_index| {
                 var child = &self.children.values()[child_index];
                 child.widget.clearGrid();
@@ -229,8 +266,9 @@ pub fn Box(comptime Widget: type) type {
                 }
 
                 // propagate whatever's left of our parent's min-size to the
-                // last child along our primary axis
-                if (sorted_child_index + 1 == sorted_children.count()) {
+                // last child along our primary axis. a shrink child is exempt:
+                // it's meant to yield space, not be forced to fill it.
+                if (sorted_child_index + 1 == sorted_children.count() and !child.shrink) {
                     switch (self.options.direction) {
                         .vert => if (constraint.min_size.height) |min_h| {
                             const inner_min = if (min_h > border_size * 2) min_h - border_size * 2 else 0;
@@ -256,8 +294,17 @@ pub fn Box(comptime Widget: type) type {
                 // clamp the granted max size by any per-child cap so the
                 // child can't grow past its declared limit even if there's
                 // more room available in the parent.
-                const child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
-                const child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
+                var child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
+                var child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
+
+                // a shrink child is additionally capped to the leftover after
+                // its siblings' minimums, so it yields to them along the main axis.
+                if (child.shrink) {
+                    if (shrink_budget) |budget| switch (self.options.direction) {
+                        .horiz => child_max_width = clampMax(child_max_width, budget),
+                        .vert => child_max_height = clampMax(child_max_height, budget),
+                    };
+                }
 
                 try child.widget.build(allocator, .{
                     .min_size = child_min_size,
