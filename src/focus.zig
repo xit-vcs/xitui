@@ -83,6 +83,14 @@ pub const Focus = struct {
                 return;
             }
         }
+        // only commit if the descent actually landed on a focusable widget. if
+        // it stopped on a non-focusable container — because the selected subtree
+        // has nothing focusable (e.g. an empty list) or the target wasn't laid
+        // out — leave focus untouched rather than stranding it somewhere that
+        // can't take input and can't be moved off of.
+        const target = self.children.get(id) orelse return;
+        if (!target.focus.focusable) return;
+
         // set the child_id of all parents so the id is focused
         self.grandchild_id = id;
         while (self.children.get(id)) |child| {
