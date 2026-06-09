@@ -1026,6 +1026,26 @@ pub fn Scroll(comptime Widget: type) type {
                     .width = @max(1, @min(child_grid.size.width, constraint.max_size.width orelse child_grid.size.width)),
                     .height = @max(1, @min(child_grid.size.height, constraint.max_size.height orelse child_grid.size.height)),
                 }, self.x, self.y);
+
+                // the child registered its focusable descendants at content-space
+                // coordinates; shift them into the viewport (by the scroll offset)
+                // and clip to the visible area so click hit-testing lines up with
+                // what's drawn. anything scrolled out of view becomes zero-size,
+                // which never matches a hit-test.
+                const view_w: isize = @intCast(self.grid.?.size.width);
+                const view_h: isize = @intCast(self.grid.?.size.height);
+                var iter = self.getFocus().children.iterator();
+                while (iter.next()) |entry| {
+                    const r = &entry.value_ptr.rect;
+                    const x0 = @max(@as(isize, @intCast(r.x)) - self.x, 0);
+                    const y0 = @max(@as(isize, @intCast(r.y)) - self.y, 0);
+                    const x1 = @min(@as(isize, @intCast(r.x + r.size.width)) - self.x, view_w);
+                    const y1 = @min(@as(isize, @intCast(r.y + r.size.height)) - self.y, view_h);
+                    r.* = if (x1 > x0 and y1 > y0)
+                        .{ .x = @intCast(x0), .y = @intCast(y0), .size = .{ .width = @intCast(x1 - x0), .height = @intCast(y1 - y0) } }
+                    else
+                        .{ .x = 0, .y = 0, .size = .{ .width = 0, .height = 0 } };
+                }
             }
         }
 
