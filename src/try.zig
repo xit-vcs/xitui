@@ -89,9 +89,6 @@ pub fn main() !void {
             .min_size = .{ .width = null, .height = null },
             .max_size = .{ .width = last_size.width, .height = last_size.height },
         }, root.getFocus());
-
-        // TODO: do variable sleep with target frame rate
-        try std.Io.sleep(io, .fromMilliseconds(5), .real);
     }
 }
 
