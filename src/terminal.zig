@@ -636,6 +636,14 @@ pub const Terminal = struct {
         quit.store(true, .monotonic);
     }
 
+    // put the terminal back into its cooked state (leave the alternate screen,
+    // show the cursor, restore the original mode). safe to call from a panic
+    // handler so a crash's stack trace is printed on a usable terminal instead
+    // of being mangled by raw mode and the alternate buffer.
+    pub fn restore(self: *Terminal) void {
+        self.core.cook() catch {};
+    }
+
     pub fn render(self: *Terminal, root_widget: anytype, last_grid: *grd.Grid, last_size: *Size) !bool {
         self.size = self.getSize() catch |err| {
             // ignore error if terminal is quitting (SIGINT was sent)
@@ -1012,4 +1020,36 @@ pub const EscapeParser = struct {
         }
         return null;
     }
+};
+
+//
+// cooking the terminal on panic/segfault
+//
+
+// the terminal a crash handler should cook before a stack trace is printed. an
+// app registers its terminal with setActive once it lives at its final address
+// (Terminal.init returns by value, so this can't be done inside init).
+var active_terminal = std.atomic.Value(?*Terminal).init(null);
+
+pub fn setActive(terminal: ?*Terminal) void {
+    active_terminal.store(terminal, .monotonic);
+}
+
+// std.debug calls this just before it dumps a panic or signal (SIGSEGV/SIGILL/
+// SIGBUS/SIGFPE) stack trace
+fn crashHandler(_: ?*anyopaque) void {
+    if (active_terminal.load(.monotonic)) |t| t.restore();
+}
+
+// a drop-in for std's debug io that behaves identically except it cooks the
+// active terminal on a crash
+const default_debug_io = std.Io.Threaded.global_single_threaded.io();
+const crash_vtable: std.Io.VTable = blk: {
+    var vt = default_debug_io.vtable.*;
+    vt.crashHandler = crashHandler;
+    break :blk vt;
+};
+pub const crash_debug_io: std.Io = .{
+    .userdata = default_debug_io.userdata,
+    .vtable = &crash_vtable,
 };

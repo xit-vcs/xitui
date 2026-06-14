@@ -8,6 +8,10 @@ const inp = xitui.input;
 const Grid = xitui.grid.Grid;
 const Focus = xitui.focus.Focus;
 
+// cook the terminal before a panic/segfault trace is printed, so the trace
+// isn't mangled by raw mode and the alternate buffer
+pub const std_options_debug_io = term.crash_debug_io;
+
 pub fn main() !void {
     // init allocator
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
@@ -37,6 +41,11 @@ pub fn main() !void {
     // init term
     var terminal = try term.Terminal.init(io, allocator);
     defer terminal.deinit(io);
+
+    // set term as active so it will be properly cooked
+    // when a panic/segfault happens
+    term.setActive(&terminal);
+    defer term.setActive(null);
 
     var last_size = layout.Size{ .width = 0, .height = 0 };
     var last_grid = try Grid.init(allocator, last_size);
