@@ -106,7 +106,7 @@ const WidgetList = struct {
 
     pub fn init(allocator: std.mem.Allocator) !WidgetList {
         var self = blk: {
-            var inner_box = wgt.Box(Widget).init(.{ .border_style = null, .direction = .vert });
+            var inner_box = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .vert });
             errdefer inner_box.deinit(allocator);
 
             var scroll = try wgt.Scroll(Widget).init(allocator, .{ .box = inner_box }, .{ .show_bar = true });
@@ -121,14 +121,14 @@ const WidgetList = struct {
         const inner_box = &self.scroll.child.box;
 
         {
-            var text_input = wgt.TextInput(Widget).init(.{ .label = "username" });
+            var text_input = try wgt.TextInput(Widget).init(allocator, .{ .label = "username" });
             errdefer text_input.deinit(allocator);
             text_input.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
         }
 
         {
-            var text_input = wgt.TextInput(Widget).init(.{ .label = "password", .password = true });
+            var text_input = try wgt.TextInput(Widget).init(allocator, .{ .label = "password", .password = true });
             errdefer text_input.deinit(allocator);
             text_input.getFocus().focusable = true;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });

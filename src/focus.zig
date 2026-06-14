@@ -26,7 +26,7 @@ pub const Focus = struct {
     focusable: bool,
     children: std.AutoArrayHashMapUnmanaged(usize, Child),
 
-    pub fn init(kind: FocusKind) Focus {
+    fn init(kind: FocusKind) Focus {
         const id = next_id;
         next_id += 1;
         return .{
@@ -39,8 +39,19 @@ pub const Focus = struct {
         };
     }
 
-    pub fn deinit(self: *Focus, allocator: std.mem.Allocator) void {
+    fn deinit(self: *Focus, allocator: std.mem.Allocator) void {
         self.children.deinit(allocator);
+    }
+
+    pub fn create(allocator: std.mem.Allocator, kind: FocusKind) !*Focus {
+        const self = try allocator.create(Focus);
+        self.* = Focus.init(kind);
+        return self;
+    }
+
+    pub fn destroy(self: *Focus, allocator: std.mem.Allocator) void {
+        self.deinit(allocator);
+        allocator.destroy(self);
     }
 
     pub fn addChild(self: *Focus, allocator: std.mem.Allocator, child: *Focus, size: layout.Size, target_x: usize, target_y: usize) !void {

@@ -6,20 +6,20 @@ const inp = @import("./input.zig");
 
 pub fn Text(comptime Widget: type) type {
     return struct {
-        focus: Focus,
+        focus: *Focus,
         grid: ?Grid,
         content: []const u8,
 
-        pub fn init(content: []const u8) Text(Widget) {
+        pub fn init(allocator: std.mem.Allocator, content: []const u8) !Text(Widget) {
             return .{
-                .focus = Focus.init(.text),
+                .focus = try Focus.create(allocator, .text),
                 .grid = null,
                 .content = content,
             };
         }
 
         pub fn deinit(self: *Text(Widget), allocator: std.mem.Allocator) void {
-            self.focus.deinit(allocator);
+            self.focus.destroy(allocator);
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
@@ -70,7 +70,7 @@ pub fn Text(comptime Widget: type) type {
         }
 
         pub fn getFocus(self: *Text(Widget)) *Focus {
-            return &self.focus;
+            return self.focus;
         }
     };
 }
@@ -85,7 +85,7 @@ pub const BorderStyle = enum {
 
 pub fn Box(comptime Widget: type) type {
     return struct {
-        focus: Focus,
+        focus: *Focus,
         grid: ?Grid,
         children: std.AutoArrayHashMapUnmanaged(usize, Child),
         options: Options,
@@ -115,9 +115,9 @@ pub fn Box(comptime Widget: type) type {
             direction: Direction,
         };
 
-        pub fn init(options: Options) Box(Widget) {
+        pub fn init(allocator: std.mem.Allocator, options: Options) !Box(Widget) {
             return .{
-                .focus = Focus.init(.container),
+                .focus = try Focus.create(allocator, .container),
                 .grid = null,
                 .children = .empty,
                 .options = options,
@@ -125,7 +125,7 @@ pub fn Box(comptime Widget: type) type {
         }
 
         pub fn deinit(self: *Box(Widget), allocator: std.mem.Allocator) void {
-            self.focus.deinit(allocator);
+            self.focus.destroy(allocator);
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
@@ -465,7 +465,7 @@ pub fn Box(comptime Widget: type) type {
         }
 
         pub fn getFocus(self: *Box(Widget)) *Focus {
-            return &self.focus;
+            return self.focus;
         }
 
         fn clampMax(parent_max: ?usize, child_max: ?usize) ?usize {
@@ -529,11 +529,11 @@ pub fn TextBox(comptime Widget: type) type {
                 try lines.append(allocator, try line.toOwnedSlice(allocator));
             }
 
-            var box = Box(Widget).init(.{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert });
+            var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert });
             errdefer box.deinit(allocator);
             box.getFocus().kind = .text_box;
             for (lines.items) |line| {
-                var text = Text(Widget).init(line);
+                var text = try Text(Widget).init(allocator, line);
                 errdefer text.deinit(allocator);
                 try box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
             }
@@ -635,7 +635,7 @@ pub fn TextBox(comptime Widget: type) type {
                         for (self.box.children.values()) |*child| child.widget.deinit(allocator);
                         self.box.children.clearAndFree(allocator);
                         for (self.lines.items) |line| {
-                            var text = Text(Widget).init(line);
+                            var text = try Text(Widget).init(allocator, line);
                             errdefer text.deinit(allocator);
                             try self.box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
                         }
@@ -719,7 +719,7 @@ pub fn TextBox(comptime Widget: type) type {
 
 pub fn TextInput(comptime Widget: type) type {
     return struct {
-        focus: Focus,
+        focus: *Focus,
         grid: ?Grid,
         content: std.ArrayList([]const u8),
         cursor: usize,
@@ -744,9 +744,9 @@ pub fn TextInput(comptime Widget: type) type {
             render_content: bool = true,
         };
 
-        pub fn init(options: Options) TextInput(Widget) {
+        pub fn init(allocator: std.mem.Allocator, options: Options) !TextInput(Widget) {
             return .{
-                .focus = Focus.init(if (options.password) .text_input_password else .text_input),
+                .focus = try Focus.create(allocator, if (options.password) .text_input_password else .text_input),
                 .grid = null,
                 .content = .empty,
                 .cursor = 0,
@@ -756,7 +756,7 @@ pub fn TextInput(comptime Widget: type) type {
         }
 
         pub fn deinit(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
-            self.focus.deinit(allocator);
+            self.focus.destroy(allocator);
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
@@ -963,7 +963,7 @@ pub fn TextInput(comptime Widget: type) type {
         }
 
         pub fn getFocus(self: *TextInput(Widget)) *Focus {
-            return &self.focus;
+            return self.focus;
         }
     };
 }
@@ -1234,18 +1234,18 @@ pub fn Scroll(comptime Widget: type) type {
 
 pub fn Stack(comptime Widget: type) type {
     return struct {
-        focus: Focus,
+        focus: *Focus,
         children: std.AutoArrayHashMapUnmanaged(usize, Widget),
 
-        pub fn init() Stack(Widget) {
+        pub fn init(allocator: std.mem.Allocator) !Stack(Widget) {
             return .{
-                .focus = Focus.init(.container),
+                .focus = try Focus.create(allocator, .container),
                 .children = .empty,
             };
         }
 
         pub fn deinit(self: *Stack(Widget), allocator: std.mem.Allocator) void {
-            self.focus.deinit(allocator);
+            self.focus.destroy(allocator);
             for (self.children.values()) |*child| {
                 child.deinit(allocator);
             }
@@ -1284,7 +1284,7 @@ pub fn Stack(comptime Widget: type) type {
         }
 
         pub fn getFocus(self: *Stack(Widget)) *Focus {
-            return &self.focus;
+            return self.focus;
         }
 
         pub fn getSelected(self: Stack(Widget)) ?*Widget {
