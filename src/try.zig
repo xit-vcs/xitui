@@ -100,7 +100,7 @@ const WidgetList = struct {
             var inner_box = wgt.Box(Widget).init(.{ .border_style = null, .direction = .vert });
             errdefer inner_box.deinit(allocator);
 
-            var scroll = try wgt.Scroll(Widget).init(allocator, .{ .box = inner_box }, .vert);
+            var scroll = try wgt.Scroll(Widget).init(allocator, .{ .box = inner_box }, .{ .show_bar = true });
             errdefer scroll.deinit(allocator);
 
             break :blk WidgetList{

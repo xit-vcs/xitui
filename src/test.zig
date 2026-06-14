@@ -135,6 +135,76 @@ test "text box with wrapping" {
     }
 }
 
+test "vertical scroll bar" {
+    const allocator = std.testing.allocator;
+
+    const text_box = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "aaaa\nbbbb\ncccc\ndddd\neeee\nffff", .{ .border_style = null, .wrap_kind = .none }) };
+    var widget = Widget{ .scroll = try wgt.Scroll(Widget).init(allocator, text_box, .{ .direction = .vert, .show_bar = true }) };
+    defer widget.deinit(allocator);
+
+    // content is 6 rows tall, the viewport only 3, so the thumb covers half
+    // the track. the bar takes the far right column, narrowing content to 4.
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 5, .height = 3 },
+    }, widget.getFocus());
+
+    {
+        const str = try widget.getGrid().?.toString(allocator);
+        defer allocator.free(str);
+
+        try std.testing.expectEqualStrings(
+            \\aaaa█
+            \\bbbb█
+            \\cccc░
+        , str);
+    }
+
+    // scroll to the bottom; the thumb slides down to the end of the track.
+    widget.scroll.scrollToRect(.{ .x = 0, .y = 5, .size = .{ .width = 1, .height = 1 } });
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 5, .height = 3 },
+    }, widget.getFocus());
+
+    {
+        const str = try widget.getGrid().?.toString(allocator);
+        defer allocator.free(str);
+
+        try std.testing.expectEqualStrings(
+            \\dddd░
+            \\eeee█
+            \\ffff█
+        , str);
+    }
+}
+
+test "scroll bar hidden when content fits" {
+    const allocator = std.testing.allocator;
+
+    const text_box = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "aaaa\nbbbb\ncccc", .{ .border_style = null, .wrap_kind = .none }) };
+    var widget = Widget{ .scroll = try wgt.Scroll(Widget).init(allocator, text_box, .{ .direction = .vert, .show_bar = true }) };
+    defer widget.deinit(allocator);
+
+    // the viewport is taller than the content, so nothing scrolls: no bar is
+    // drawn and no column is reserved (content keeps its full width).
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 5, .height = 5 },
+    }, widget.getFocus());
+
+    {
+        const str = try widget.getGrid().?.toString(allocator);
+        defer allocator.free(str);
+
+        try std.testing.expectEqualStrings(
+            \\aaaa
+            \\bbbb
+            \\cccc
+        , str);
+    }
+}
+
 test "StreamTerminal parses a CSI arrow key" {
     const allocator = std.testing.allocator;
     var output: std.Io.Writer.Allocating = .init(allocator);

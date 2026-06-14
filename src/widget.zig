@@ -974,7 +974,17 @@ pub fn Scroll(comptime Widget: type) type {
         child: *Widget,
         x: isize,
         y: isize,
-        direction: Direction,
+        options: Options,
+        // columns/rows the scroll bar actually occupied on the last build. zero
+        // when the content fit and no bar was drawn; used to keep scrollToRect's
+        // viewport math in sync with what was rendered.
+        bar_w: usize,
+        bar_h: usize,
+
+        // the solid run that represents the visible portion of the content.
+        const thumb_rune = "█";
+        // the lighter run drawn behind the thumb for the rest of the bar.
+        const track_rune = "░";
 
         pub const Direction = enum {
             vert,
@@ -982,7 +992,59 @@ pub fn Scroll(comptime Widget: type) type {
             both,
         };
 
-        pub fn init(allocator: std.mem.Allocator, widget: Widget, direction: Direction) !Scroll(Widget) {
+        pub const Options = struct {
+            direction: Direction = .vert,
+            show_bar: bool = true,
+        };
+
+        // subtract a scroll bar's reserved column/row from an optional size
+        // constraint, keeping at least one cell. a null (unbounded) size stays null.
+        fn subReserve(size: ?usize, reserve: usize) ?usize {
+            return if (size) |s| (if (s > reserve) s - reserve else 1) else null;
+        }
+
+        // figure out where the scroll bar thumb sits and how long it is. the thumb's
+        // length is the track length scaled by how much of the content is visible, and
+        // its position is the current scroll offset scaled into the leftover track. if
+        // everything fits, the thumb fills the whole track.
+        fn scrollBarThumb(track_len: usize, content_total: usize, viewport: usize, offset: isize) struct { start: usize, len: usize } {
+            if (track_len == 0 or content_total <= viewport) {
+                return .{ .start = 0, .len = track_len };
+            }
+            const tl: f64 = @floatFromInt(track_len);
+            const ct: f64 = @floatFromInt(content_total);
+            const vp: f64 = @floatFromInt(viewport);
+            var len: usize = @intFromFloat(@round(tl * vp / ct));
+            if (len < 1) len = 1;
+            if (len > track_len) len = track_len;
+            const max_start = track_len - len;
+            const off: f64 = @floatFromInt(@max(@as(isize, 0), offset));
+            const max_off = ct - vp;
+            var start: usize = @intFromFloat(@round(@as(f64, @floatFromInt(max_start)) * off / max_off));
+            if (start > max_start) start = max_start;
+            return .{ .start = start, .len = len };
+        }
+
+        // the constraint to lay the child out under, shrinking the bounded axis
+        // by the column/row each bar reserves so content never sits under it.
+        fn childConstraint(direction: Direction, constraint: layout.Constraint, reserve_w: usize, reserve_h: usize) layout.Constraint {
+            return switch (direction) {
+                .vert => .{
+                    .min_size = constraint.min_size,
+                    .max_size = .{ .width = subReserve(constraint.max_size.width, reserve_w), .height = null },
+                },
+                .horiz => .{
+                    .min_size = constraint.min_size,
+                    .max_size = .{ .width = null, .height = subReserve(constraint.max_size.height, reserve_h) },
+                },
+                .both => .{
+                    .min_size = constraint.min_size,
+                    .max_size = .{ .width = null, .height = null },
+                },
+            };
+        }
+
+        pub fn init(allocator: std.mem.Allocator, widget: Widget, options: Options) !Scroll(Widget) {
             const child = try allocator.create(Widget);
             errdefer allocator.destroy(child);
             child.* = widget;
@@ -991,7 +1053,9 @@ pub fn Scroll(comptime Widget: type) type {
                 .child = child,
                 .x = 0,
                 .y = 0,
-                .direction = direction,
+                .options = options,
+                .bar_w = 0,
+                .bar_h = 0,
             };
         }
 
@@ -1006,34 +1070,99 @@ pub fn Scroll(comptime Widget: type) type {
 
         pub fn build(self: *Scroll(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
-            const child_constraint: layout.Constraint = switch (self.direction) {
-                .vert => .{
-                    .min_size = constraint.min_size,
-                    .max_size = .{ .width = constraint.max_size.width, .height = null },
-                },
-                .horiz => .{
-                    .min_size = constraint.min_size,
-                    .max_size = .{ .width = null, .height = constraint.max_size.height },
-                },
-                .both => .{
-                    .min_size = constraint.min_size,
-                    .max_size = .{ .width = null, .height = null },
-                },
-            };
-            try self.child.build(allocator, child_constraint, root_focus);
+            self.bar_w = 0;
+            self.bar_h = 0;
+
+            // lay the child out at the full viewport first so we can tell whether
+            // it actually overflows. a bar (and the column/row it steals) is only
+            // worth showing when the content doesn't fit.
+            const dir = self.options.direction;
+            try self.child.build(allocator, childConstraint(dir, constraint, 0, 0), root_focus);
+
+            if (self.child.getGrid()) |measured| {
+                const vp_w = constraint.max_size.width orelse measured.size.width;
+                const vp_h = constraint.max_size.height orelse measured.size.height;
+                const can_vert = dir == .vert or dir == .both;
+                const can_horiz = dir == .horiz or dir == .both;
+
+                // a bar shrinks the cross viewport by one, which can tip the other
+                // axis into overflowing; resolve both together. content size is
+                // fixed for .both (unbounded child) and the cross axis doesn't
+                // affect overflow for single-direction scrolls, so this settles in
+                // one pass.
+                var reserve_w: usize = 0;
+                var reserve_h: usize = 0;
+                if (self.options.show_bar) {
+                    for (0..2) |_| {
+                        reserve_w = if (can_vert and measured.size.height > vp_h -| reserve_h) 1 else 0;
+                        reserve_h = if (can_horiz and measured.size.width > vp_w -| reserve_w) 1 else 0;
+                    }
+                }
+
+                // re-lay the child in the reduced space so it wraps/clips to the
+                // area left beside the bar. (.both leaves the child unbounded, so
+                // there's nothing to redo.)
+                if ((reserve_w != 0 or reserve_h != 0) and dir != .both) {
+                    try self.child.build(allocator, childConstraint(dir, constraint, reserve_w, reserve_h), root_focus);
+                }
+                self.bar_w = reserve_w;
+                self.bar_h = reserve_h;
+            }
+
             if (self.child.getGrid()) |child_grid| {
-                self.grid = try Grid.initFromGrid(allocator, child_grid, .{
-                    .width = @max(1, @min(child_grid.size.width, constraint.max_size.width orelse child_grid.size.width)),
-                    .height = @max(1, @min(child_grid.size.height, constraint.max_size.height orelse child_grid.size.height)),
-                }, self.x, self.y);
+                const reserve_w = self.bar_w;
+                const reserve_h = self.bar_h;
+                const avail_w = subReserve(constraint.max_size.width, reserve_w) orelse child_grid.size.width;
+                const avail_h = subReserve(constraint.max_size.height, reserve_h) orelse child_grid.size.height;
+                const content_w = @max(1, @min(child_grid.size.width, avail_w));
+                const content_h = @max(1, @min(child_grid.size.height, avail_h));
+
+                if (reserve_w == 0 and reserve_h == 0) {
+                    self.grid = try Grid.initFromGrid(allocator, child_grid, .{
+                        .width = content_w,
+                        .height = content_h,
+                    }, self.x, self.y);
+                } else {
+                    // draw the scrolled content into a grid that's one wider
+                    // and/or one taller than the content area, then paint the
+                    // bar(s) into the reserved column/row.
+                    var content = try Grid.initFromGrid(allocator, child_grid, .{
+                        .width = content_w,
+                        .height = content_h,
+                    }, self.x, self.y);
+                    defer content.deinit();
+                    var full = try Grid.init(allocator, .{
+                        .width = content_w + reserve_w,
+                        .height = content_h + reserve_h,
+                    });
+                    errdefer full.deinit();
+                    try full.drawGrid(content, 0, 0);
+                    if (reserve_w == 1) {
+                        const thumb = scrollBarThumb(content_h, child_grid.size.height, content_h, self.y);
+                        const bar_x = content_w;
+                        for (0..content_h) |row| {
+                            full.cells.items[try full.cells.at(.{ row, bar_x })].rune =
+                                if (row >= thumb.start and row < thumb.start + thumb.len) thumb_rune else track_rune;
+                        }
+                    }
+                    if (reserve_h == 1) {
+                        const thumb = scrollBarThumb(content_w, child_grid.size.width, content_w, self.x);
+                        const bar_y = content_h;
+                        for (0..content_w) |col| {
+                            full.cells.items[try full.cells.at(.{ bar_y, col })].rune =
+                                if (col >= thumb.start and col < thumb.start + thumb.len) thumb_rune else track_rune;
+                        }
+                    }
+                    self.grid = full;
+                }
 
                 // the child registered its focusable descendants at content-space
                 // coordinates; shift them into the viewport (by the scroll offset)
                 // and clip to the visible area so click hit-testing lines up with
                 // what's drawn. anything scrolled out of view becomes zero-size,
                 // which never matches a hit-test.
-                const view_w: isize = @intCast(self.grid.?.size.width);
-                const view_h: isize = @intCast(self.grid.?.size.height);
+                const view_w: isize = @intCast(content_w);
+                const view_h: isize = @intCast(content_h);
                 var iter = self.getFocus().children.iterator();
                 while (iter.next()) |entry| {
                     const r = &entry.value_ptr.rect;
@@ -1066,24 +1195,28 @@ pub fn Scroll(comptime Widget: type) type {
 
         pub fn scrollToRect(self: *Scroll(Widget), rect: layout.IRect) void {
             if (self.grid) |grid| {
-                if (self.direction == .horiz or self.direction == .both) {
+                // the bar's reserved column/row isn't part of the content
+                // viewport, so exclude it when computing scroll bounds.
+                const content_width = grid.size.width - self.bar_w;
+                const content_height = grid.size.height - self.bar_h;
+                if (self.options.direction == .horiz or self.options.direction == .both) {
                     if (rect.x < self.x) {
                         self.x -= self.x - rect.x;
                     } else {
                         const rect_x = rect.x + @as(isize, @intCast(rect.size.width));
-                        const self_x = self.x + @as(isize, @intCast(grid.size.width));
+                        const self_x = self.x + @as(isize, @intCast(content_width));
                         self.x += if (rect_x > self_x)
                             rect_x - self_x
                         else
                             0;
                     }
                 }
-                if (self.direction == .vert or self.direction == .both) {
+                if (self.options.direction == .vert or self.options.direction == .both) {
                     if (rect.y < self.y) {
                         self.y -= self.y - rect.y;
                     } else {
                         const rect_y = rect.y + @as(isize, @intCast(rect.size.height));
-                        const self_y = self.y + @as(isize, @intCast(grid.size.height));
+                        const self_y = self.y + @as(isize, @intCast(content_height));
                         self.y += if (rect_y > self_y)
                             rect_y - self_y
                         else
