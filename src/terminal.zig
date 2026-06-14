@@ -705,7 +705,7 @@ pub fn renderToWriter(
         // render the grid
         if (root_widget.getGrid()) |grid| {
             last_grid.deinit();
-            last_grid.* = try grd.Grid.initFromGrid(allocator, grid, grid.size, 0, 0);
+            last_grid.* = try grd.Grid.initFromGridOwned(allocator, grid, grid.size, 0, 0);
             for (0..grid.size.height) |y| {
                 for (0..grid.size.width) |x| {
                     const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
@@ -745,7 +745,7 @@ pub fn renderToWriter(
             // update last_grid if necessary
             if (grid_changed) {
                 last_grid.deinit();
-                last_grid.* = try grd.Grid.initFromGrid(allocator, grid, grid.size, 0, 0);
+                last_grid.* = try grd.Grid.initFromGridOwned(allocator, grid, grid.size, 0, 0);
             }
         }
     }

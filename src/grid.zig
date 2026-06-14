@@ -7,6 +7,12 @@ pub const Grid = struct {
     size: layout.Size,
     cells: Cells,
     buffer: []Grid.Cell,
+    // normally cells borrow their rune bytes from widget-owned memory, which is
+    // only valid for the frame they were built in. when a grid must outlive that
+    // frame (e.g. the previous-frame snapshot the renderer diffs against), it
+    // owns a copy of every rune here and the cells point into it. null when the
+    // grid borrows (the common case).
+    rune_buffer: ?[]u8 = null,
 
     pub const Color = struct {
         r: u8,
@@ -113,7 +119,35 @@ pub const Grid = struct {
     }
 
     pub fn deinit(self: *Grid) void {
+        if (self.rune_buffer) |rune_buffer| self.allocator.free(rune_buffer);
         self.allocator.free(self.buffer);
+    }
+
+    // a copy of `grid` that owns its rune bytes, so it stays valid after the
+    // widget memory the original cells borrowed from is freed or rewritten. use
+    // this for any grid kept across frames (the renderer's previous-frame
+    // snapshot); plain initFromGrid borrows and is only safe within a frame.
+    pub fn initFromGridOwned(allocator: std.mem.Allocator, grid: Grid, size: layout.Size, grid_x: isize, grid_y: isize) !Grid {
+        var new_grid = try initFromGrid(allocator, grid, size, grid_x, grid_y);
+        errdefer new_grid.deinit();
+
+        var total: usize = 0;
+        for (new_grid.buffer) |cell| {
+            if (cell.rune) |rune| total += rune.len;
+        }
+        if (total > 0) {
+            const rune_buffer = try allocator.alloc(u8, total);
+            var offset: usize = 0;
+            for (new_grid.buffer) |*cell| {
+                if (cell.rune) |rune| {
+                    @memcpy(rune_buffer[offset .. offset + rune.len], rune);
+                    cell.rune = rune_buffer[offset .. offset + rune.len];
+                    offset += rune.len;
+                }
+            }
+            new_grid.rune_buffer = rune_buffer;
+        }
+        return new_grid;
     }
 
     pub fn drawGrid(self: *Grid, child_grid: Grid, target_x: usize, target_y: usize) !void {
