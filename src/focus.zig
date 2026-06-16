@@ -35,6 +35,10 @@ pub const Focus = struct {
     focusable: bool,
     children: std.AutoArrayHashMapUnmanaged(usize, Child),
     scroll: ?ScrollInfo,
+    // owner-bumped when this node's content is replaced (not merely restyled).
+    // persists across builds (unlike `scroll`, which is rebuilt each frame), so a
+    // web renderer can reset the native scroll position only on real changes.
+    version: u64,
 
     fn init(kind: FocusKind) Focus {
         const id = next_id;
@@ -47,6 +51,7 @@ pub const Focus = struct {
             .focusable = false,
             .children = .empty,
             .scroll = null,
+            .version = 0,
         };
     }
 
