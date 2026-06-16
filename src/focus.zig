@@ -1,5 +1,7 @@
 const std = @import("std");
 const layout = @import("./layout.zig");
+const grid = @import("./grid.zig");
+const widget = @import("./widget.zig");
 
 var next_id: usize = 0;
 
@@ -18,6 +20,13 @@ const Child = struct {
     rect: layout.URect,
 };
 
+pub const ScrollInfo = struct {
+    content: grid.Grid,
+    offset_x: isize,
+    offset_y: isize,
+    direction: widget.ScrollDirection,
+};
+
 pub const Focus = struct {
     id: usize,
     kind: FocusKind,
@@ -25,6 +34,7 @@ pub const Focus = struct {
     grandchild_id: ?usize,
     focusable: bool,
     children: std.AutoArrayHashMapUnmanaged(usize, Child),
+    scroll: ?ScrollInfo,
 
     fn init(kind: FocusKind) Focus {
         const id = next_id;
@@ -36,6 +46,7 @@ pub const Focus = struct {
             .grandchild_id = null,
             .focusable = false,
             .children = .empty,
+            .scroll = null,
         };
     }
 

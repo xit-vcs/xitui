@@ -968,6 +968,12 @@ pub fn TextInput(comptime Widget: type) type {
     };
 }
 
+pub const ScrollDirection = enum {
+    vert,
+    horiz,
+    both,
+};
+
 pub fn Scroll(comptime Widget: type) type {
     return struct {
         grid: ?Grid,
@@ -986,15 +992,13 @@ pub fn Scroll(comptime Widget: type) type {
         // the lighter run drawn behind the thumb for the rest of the bar.
         const track_rune = "░";
 
-        pub const Direction = enum {
-            vert,
-            horiz,
-            both,
-        };
-
         pub const Options = struct {
-            direction: Direction = .vert,
+            direction: ScrollDirection = .vert,
             show_bar: bool = true,
+            // when true, expose the full unclipped content (and skip the text
+            // scrollbar and focus-rect clipping) so a web renderer can place the
+            // content in a natively-scrollable element
+            web_native: bool = false,
         };
 
         // subtract a scroll bar's reserved column/row from an optional size
@@ -1027,7 +1031,7 @@ pub fn Scroll(comptime Widget: type) type {
 
         // the constraint to lay the child out under, shrinking the bounded axis
         // by the column/row each bar reserves so content never sits under it.
-        fn childConstraint(direction: Direction, constraint: layout.Constraint, reserve_w: usize, reserve_h: usize) layout.Constraint {
+        fn childConstraint(direction: ScrollDirection, constraint: layout.Constraint, reserve_w: usize, reserve_h: usize) layout.Constraint {
             return switch (direction) {
                 .vert => .{
                     .min_size = constraint.min_size,
@@ -1078,6 +1082,28 @@ pub fn Scroll(comptime Widget: type) type {
             // worth showing when the content doesn't fit.
             const dir = self.options.direction;
             try self.child.build(allocator, childConstraint(dir, constraint, 0, 0), root_focus);
+
+            // web-native mode: the browser scrolls a real element holding the
+            // full content, so keep self.grid only as the viewport footprint (for
+            // the parent's layout), hand the full child grid to the renderer via
+            // the focus node, and leave the child's focus rects in content space
+            // (no clip/shift) and draw no scrollbar.
+            if (self.options.web_native) {
+                if (self.child.getGrid()) |child_grid| {
+                    const avail_w = constraint.max_size.width orelse child_grid.size.width;
+                    const avail_h = constraint.max_size.height orelse child_grid.size.height;
+                    const content_w = @max(1, @min(child_grid.size.width, avail_w));
+                    const content_h = @max(1, @min(child_grid.size.height, avail_h));
+                    self.grid = try Grid.initFromGrid(allocator, child_grid, .{ .width = content_w, .height = content_h }, 0, 0);
+                    self.getFocus().scroll = .{
+                        .content = child_grid,
+                        .offset_x = self.x,
+                        .offset_y = self.y,
+                        .direction = dir,
+                    };
+                }
+                return;
+            }
 
             if (self.child.getGrid()) |measured| {
                 const vp_w = constraint.max_size.width orelse measured.size.width;
