@@ -373,6 +373,12 @@ pub fn Box(comptime Widget: type) type {
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, border_size, line + border_size);
                             line += child_grid.size.height;
                         } else {
+                            // this child wasn't laid out this build (it didn't fit,
+                            // so it has no grid). drop its stale focus subtree so it
+                            // isn't flattened upward, which would leave phantom
+                            // focusables/scrolls behind from when it was last shown.
+                            child.widget.getFocus().clear();
+
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
                         }
                     }
@@ -386,6 +392,12 @@ pub fn Box(comptime Widget: type) type {
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, col + border_size, border_size);
                             col += child_grid.size.width;
                         } else {
+                            // this child wasn't laid out this build (it didn't fit,
+                            // so it has no grid). drop its stale focus subtree so it
+                            // isn't flattened upward, which would leave phantom
+                            // focusables/scrolls behind from when it was last shown.
+                            child.widget.getFocus().clear();
+
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
                         }
                     }
