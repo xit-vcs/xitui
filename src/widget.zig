@@ -465,7 +465,7 @@ pub fn Box(comptime Widget: type) type {
             // fit and had its focus subtree cleared) by re-deriving it down the
             // selected-child chain. a no-op for nested boxes and whenever focus is
             // still live, so callers never have to manage this themselves.
-            if (root_focus == self.getFocus()) try root_focus.refocus();
+            if (root_focus == self.getFocus()) root_focus.refocus();
         }
 
         pub fn input(self: *Box(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {

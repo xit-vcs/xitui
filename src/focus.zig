@@ -91,7 +91,7 @@ pub const Focus = struct {
         self.children.clearRetainingCapacity();
     }
 
-    pub fn setFocus(self: *Focus, grandchild_id: usize) !void {
+    pub fn setFocus(self: *Focus, grandchild_id: usize) void {
         var id = grandchild_id;
         // descend toward the nearest focusable along the selected-child chain
         while (self.children.get(id)) |child| {
@@ -140,8 +140,8 @@ pub const Focus = struct {
     // because the child_id chain still points at the surviving subtree (and at
     // whichever pane a view re-selected before the build), re-descending lands
     // focus there. it's a no-op when the chain already leads to the live focus.
-    pub fn refocus(self: *Focus) !void {
+    pub fn refocus(self: *Focus) void {
         const child_id = self.child_id orelse return;
-        try self.setFocus(child_id);
+        self.setFocus(child_id);
     }
 };

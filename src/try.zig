@@ -78,7 +78,7 @@ pub fn main() !void {
                             if (mouse.x >= r.x and mouse.y >= r.y and
                                 mouse.x < r.x + r.size.width and mouse.y < r.y + r.size.height)
                             {
-                                try root_focus.setFocus(entry.key_ptr.*);
+                                root_focus.setFocus(entry.key_ptr.*);
                                 break;
                             }
                         }
@@ -252,7 +252,7 @@ const WidgetList = struct {
                 }
 
                 if (index != current_index) {
-                    try root_focus.setFocus(children.keys()[index]);
+                    root_focus.setFocus(children.keys()[index]);
                     self.updateScroll(index);
                 }
             }
