@@ -1020,6 +1020,11 @@ pub fn Scroll(comptime Widget: type) type {
             // scrollbar and focus-rect clipping) so a web renderer can place the
             // content in a natively-scrollable element
             web_native: bool = false,
+            // when true, the grid fills its bounded viewport (content drawn at the
+            // top-left, any scroll bar pinned to the far edge) instead of shrinking
+            // to the content. lets a bordered/parent layout keep the bar at its
+            // edge even when the content is smaller than the viewport.
+            fill: bool = false,
         };
 
         // subtract a scroll bar's reserved column/row from an optional size
@@ -1113,8 +1118,8 @@ pub fn Scroll(comptime Widget: type) type {
                 if (self.child.getGrid()) |child_grid| {
                     const avail_w = constraint.max_size.width orelse child_grid.size.width;
                     const avail_h = constraint.max_size.height orelse child_grid.size.height;
-                    const content_w = @max(1, @min(child_grid.size.width, avail_w));
-                    const content_h = @max(1, @min(child_grid.size.height, avail_h));
+                    const content_w = @max(1, if (self.options.fill) avail_w else @min(child_grid.size.width, avail_w));
+                    const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
                     self.grid = try Grid.initFromGrid(allocator, child_grid, .{ .width = content_w, .height = content_h }, 0, 0);
                     self.getFocus().scroll = .{
                         .content = child_grid,
@@ -1161,8 +1166,8 @@ pub fn Scroll(comptime Widget: type) type {
                 const reserve_h = self.bar_h;
                 const avail_w = subReserve(constraint.max_size.width, reserve_w) orelse child_grid.size.width;
                 const avail_h = subReserve(constraint.max_size.height, reserve_h) orelse child_grid.size.height;
-                const content_w = @max(1, @min(child_grid.size.width, avail_w));
-                const content_h = @max(1, @min(child_grid.size.height, avail_h));
+                const content_w = @max(1, if (self.options.fill) avail_w else @min(child_grid.size.width, avail_w));
+                const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
 
                 if (reserve_w == 0 and reserve_h == 0) {
                     self.grid = try Grid.initFromGrid(allocator, child_grid, .{
