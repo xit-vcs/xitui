@@ -457,6 +457,15 @@ pub fn Box(comptime Widget: type) type {
 
             // set grid
             self.grid = grid;
+
+            // the top-level build is the only one handed its own focus node as
+            // the root focus; reaching it here means the whole focusable tree has
+            // just been flattened into root_focus. recover focus if this build
+            // dropped the widget that held it (e.g. a flex child that no longer
+            // fit and had its focus subtree cleared) by re-deriving it down the
+            // selected-child chain. a no-op for nested boxes and whenever focus is
+            // still live, so callers never have to manage this themselves.
+            if (root_focus == self.getFocus()) try root_focus.refocus();
         }
 
         pub fn input(self: *Box(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {

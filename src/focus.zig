@@ -93,33 +93,35 @@ pub const Focus = struct {
 
     pub fn setFocus(self: *Focus, grandchild_id: usize) !void {
         var id = grandchild_id;
-        // find the nearest child to grandchild_id that is focusable
+        // descend toward the nearest focusable along the selected-child chain
         while (self.children.get(id)) |child| {
-            if (child.focus.focusable) {
-                break;
-            } else if (child.focus.child_id) |next_child_id| {
-                // stop descending if the next id isn't in our focus tree
-                // (e.g. the target child wasn't laid out this build, or its
-                // descendants were just replaced and haven't been re-added).
-                // without this guard we'd commit to a dead-end id and the
-                // walk-up below would silently no-op, leaving ancestor
-                // child_id values pointing at the previous focus.
-                if (!self.children.contains(next_child_id)) break;
-                id = next_child_id;
-            } else {
-                return;
-            }
+            if (child.focus.focusable) break;
+            const next_child_id = child.focus.child_id orelse break;
+            // the selected child exists but wasn't laid out this build — a flex
+            // child a Box dropped for lack of room, whose focus subtree was
+            // cleared. stop here and select this subtree anyway (below) so the
+            // next build lays it out; the post-build recovery then lands focus
+            // inside it. callers can therefore always just setFocus the thing
+            // they want, laid out or not.
+            if (!self.children.contains(next_child_id)) break;
+            id = next_child_id;
         }
-        // only commit if the descent actually landed on a focusable widget. if
-        // it stopped on a non-focusable container — because the selected subtree
-        // has nothing focusable (e.g. an empty list) or the target wasn't laid
-        // out — leave focus untouched rather than stranding it somewhere that
-        // can't take input and can't be moved off of.
-        const target = self.children.get(id) orelse return;
-        if (!target.focus.focusable) return;
 
-        // set the child_id of all parents so the id is focused
-        self.grandchild_id = id;
+        const target = self.children.get(id) orelse return;
+        // a node whose selected child was dropped is worth selecting (it lays out
+        // next build); a container that simply has nothing focusable under it
+        // (e.g. an empty list) is not — leave focus untouched rather than
+        // stranding it somewhere that can't take input.
+        const has_dropped_child = if (target.focus.child_id) |c| !self.children.contains(c) else false;
+        if (!target.focus.focusable and !has_dropped_child) return;
+
+        // land the cursor only on a focusable target; for a dropped subtree leave
+        // grandchild_id where it is and let the post-build recovery move it once
+        // the subtree is laid out.
+        if (target.focus.focusable) self.grandchild_id = id;
+
+        // select `id` up the chain so every ancestor (and any too-narrow Box)
+        // builds toward it next time
         while (self.children.get(id)) |child| {
             if (self.children.get(child.parent_id)) |*parent| {
                 parent.focus.child_id = id;
@@ -128,5 +130,18 @@ pub const Focus = struct {
             }
             id = child.parent_id;
         }
+    }
+
+    // re-derive the focused leaf by descending the child_id chain from this node,
+    // following each box's currently-selected child to the nearest focusable.
+    // call it once after a full (top-level) build: a flex Box that couldn't fit
+    // every child drops the ones it didn't lay out and clears their focus
+    // subtrees, which can strand grandchild_id on a widget that no longer exists.
+    // because the child_id chain still points at the surviving subtree (and at
+    // whichever pane a view re-selected before the build), re-descending lands
+    // focus there. it's a no-op when the chain already leads to the live focus.
+    pub fn refocus(self: *Focus) !void {
+        const child_id = self.child_id orelse return;
+        try self.setFocus(child_id);
     }
 };

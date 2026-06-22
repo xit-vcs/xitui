@@ -29,14 +29,11 @@ pub fn main() !void {
     var root = Widget{ .widget_list = try WidgetList.init(allocator) };
     defer root.deinit(allocator);
 
-    // set initial focus for root widget
+    // build once so the root settles focus onto its initial child
     try root.build(allocator, .{
         .min_size = .{ .width = null, .height = null },
         .max_size = .{ .width = 10, .height = 10 },
     }, root.getFocus());
-    if (root.getFocus().child_id) |child_id| {
-        try root.getFocus().setFocus(child_id);
-    }
 
     // init term
     var terminal = try term.Terminal.init(io, allocator);
