@@ -102,6 +102,9 @@ pub fn Box(comptime Widget: type) type {
             // behaves as a fixed-size child here — leave min_size/max_size null;
             // they're overwritten.
             shrink: bool = false,
+            // skipped this build: occupies no space and isn't drawn, as if it
+            // produced no grid. its focus subtree drops out too.
+            hidden: bool = false,
         };
 
         pub const Direction = enum {
@@ -198,6 +201,7 @@ pub fn Box(comptime Widget: type) type {
                 } orelse break :blk null;
                 var others: usize = 0;
                 for (self.children.values()) |child| {
+                    if (child.hidden) continue;
                     if (child.shrink) continue;
                     if (child.min_size) |min_size| {
                         const min_main = switch (self.options.direction) {
@@ -219,6 +223,7 @@ pub fn Box(comptime Widget: type) type {
             // yielding before any sibling is dropped.
             if (shrink_budget) |budget| {
                 for (self.children.values()) |*child| {
+                    if (child.hidden) continue;
                     if (!child.shrink) continue;
                     const measure_max: layout.MaybeSize = switch (self.options.direction) {
                         .horiz => .{ .width = budget, .height = remaining_height_maybe },
@@ -243,6 +248,10 @@ pub fn Box(comptime Widget: type) type {
             for (sorted_children.keys(), 0..) |child_index, sorted_child_index| {
                 var child = &self.children.values()[child_index];
                 child.widget.clearGrid();
+
+                // a hidden child takes no space: leave its grid cleared so the
+                // placement loop routes it through the no-grid branch.
+                if (child.hidden) continue;
 
                 // skip any children after the first if their min size is too large
                 if (sorted_child_index > 0) {
@@ -277,6 +286,7 @@ pub fn Box(comptime Widget: type) type {
                     const self_min_width = child_min_size.width orelse 0;
                     for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
                         const next_child = &self.children.values()[sorted_children.keys()[next_sorted_child_index]];
+                        if (next_child.hidden) continue;
                         if (next_child.min_size) |next_min_size| {
                             if (next_min_size.width) |next_min_width| {
                                 if (expected_remaining_width.* >= self_min_width + next_min_width) {
@@ -290,6 +300,7 @@ pub fn Box(comptime Widget: type) type {
                     const self_min_height = child_min_size.height orelse 0;
                     for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
                         const next_child = &self.children.values()[sorted_children.keys()[next_sorted_child_index]];
+                        if (next_child.hidden) continue;
                         if (next_child.min_size) |next_min_size| {
                             if (next_min_size.height) |next_min_height| {
                                 if (expected_remaining_height.* >= self_min_height + next_min_height) {
