@@ -299,6 +299,16 @@ pub const Core = switch (builtin.os.tag) {
                             if (cp == 13 or cp == 10) return .enter;
                             if (cp == 9) return .tab;
                             if (cp == 0x1B) return .escape;
+                            // remaining C0 control chars are ctrl+letter (0x01 == ctrl+a)
+                            if (cp >= 0x01 and cp <= 0x1A) return .{ .ctrl = @intCast(cp - 0x01 + 'a') };
+                            // alt+key — but not when a ctrl bit is also set,
+                            // because AltGr reports as right alt + left ctrl
+                            // and must keep producing plain codepoints
+                            const alt_pressed = event.KeyEvent.dwControlKeyState & (0x0001 | 0x0002) != 0;
+                            const ctrl_pressed = event.KeyEvent.dwControlKeyState & (0x0004 | 0x0008) != 0;
+                            if (alt_pressed and !ctrl_pressed and cp >= 0x20 and cp < 0x7F) {
+                                return .{ .alt = @intCast(cp) };
+                            }
                             return .{ .codepoint = cp };
                         }
                         // otherwise it's a non-printable key. key codes are listed here:
@@ -314,7 +324,10 @@ pub const Core = switch (builtin.os.tag) {
                                 0x27 => .arrow_right,
                                 0x28 => .arrow_down,
                                 0x0D => .enter,
+                                0x2D => .insert,
                                 0x2E => .delete,
+                                // F1-F12
+                                0x70...0x7B => .{ .f = @intCast(event.KeyEvent.wVirtualKeyCode - 0x70 + 1) },
                                 else => continue,
                             };
                         }
@@ -950,10 +963,15 @@ pub const EscapeParser = struct {
             // esc sequences should be ascii-only
             const byte: u8 = std.math.cast(u8, codepoint) orelse return null;
 
-            // the character after esc is part of the sequence and doesn't need to be looked at
+            // the character after esc either opens a CSI/SS3 sequence or
+            // completes an alt combo
             if (esc_len == 1) {
-                self.esc_buffer.appendAssumeCapacity(byte);
-                return null;
+                if (byte == '[' or byte == 'O') {
+                    self.esc_buffer.appendAssumeCapacity(byte);
+                    return null;
+                }
+                self.esc_buffer.clearRetainingCapacity();
+                return .{ .alt = byte };
             }
 
             // return key or add byte to esc sequence
@@ -969,12 +987,21 @@ pub const EscapeParser = struct {
                         'H' => .home,
                         // shift+tab — xterm-style "CSI Z"
                         'Z' => .back_tab,
+                        // F1–F4 — SS3-style "ESC O P" through "ESC O S"
+                        // (also the terminator of modified CSI forms
+                        // like "CSI 1;2P", whose modifier we ignore)
+                        'P' => .{ .f = 1 },
+                        'Q' => .{ .f = 2 },
+                        'R' => .{ .f = 3 },
+                        'S' => .{ .f = 4 },
                         'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
                         '~' => blk: {
                             var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
                             const code = codes.first();
                             break :blk if (std.mem.eql(u8, code, "1"))
                                 .home
+                            else if (std.mem.eql(u8, code, "2"))
+                                .insert
                             else if (std.mem.eql(u8, code, "3"))
                                 .delete
                             else if (std.mem.eql(u8, code, "4"))
@@ -983,6 +1010,32 @@ pub const EscapeParser = struct {
                                 .page_up
                             else if (std.mem.eql(u8, code, "6"))
                                 .page_down
+                                // F1–F12 — the historical code sequence
+                                // has gaps at 16 and 22
+                            else if (std.mem.eql(u8, code, "11"))
+                                inp.Key{ .f = 1 }
+                            else if (std.mem.eql(u8, code, "12"))
+                                inp.Key{ .f = 2 }
+                            else if (std.mem.eql(u8, code, "13"))
+                                inp.Key{ .f = 3 }
+                            else if (std.mem.eql(u8, code, "14"))
+                                inp.Key{ .f = 4 }
+                            else if (std.mem.eql(u8, code, "15"))
+                                inp.Key{ .f = 5 }
+                            else if (std.mem.eql(u8, code, "17"))
+                                inp.Key{ .f = 6 }
+                            else if (std.mem.eql(u8, code, "18"))
+                                inp.Key{ .f = 7 }
+                            else if (std.mem.eql(u8, code, "19"))
+                                inp.Key{ .f = 8 }
+                            else if (std.mem.eql(u8, code, "20"))
+                                inp.Key{ .f = 9 }
+                            else if (std.mem.eql(u8, code, "21"))
+                                inp.Key{ .f = 10 }
+                            else if (std.mem.eql(u8, code, "23"))
+                                inp.Key{ .f = 11 }
+                            else if (std.mem.eql(u8, code, "24"))
+                                inp.Key{ .f = 12 }
                             else
                                 .unknown;
                         },
@@ -1002,10 +1055,11 @@ pub const EscapeParser = struct {
                     // `[` opens a CSI sequence (arrows, page keys, mouse,
                     // etc.). `O` opens an SS3 sequence — most modern
                     // terminals use it for F1–F4 (ESC O P/Q/R/S) and for
-                    // arrow keys in application-keypad mode. either way,
-                    // we buffer the ESC and let the existing terminator
-                    // switch dispatch on whatever ends the sequence.
-                    if (next_byte == '[' or next_byte == 'O') {
+                    // arrow keys in application-keypad mode. any other
+                    // printable byte is an alt combo (alt+x sends ESC x).
+                    // either way, we buffer the ESC and dispatch on the
+                    // next byte.
+                    if (next_byte >= 0x20 and next_byte < 0x7F) {
                         self.esc_buffer.appendAssumeCapacity('\x1B');
                         return null;
                     }
@@ -1016,6 +1070,8 @@ pub const EscapeParser = struct {
             if (codepoint == 8 or codepoint == 127) return .backspace;
             if (codepoint == 13 or codepoint == 10) return .enter;
             if (codepoint == 9) return .tab;
+            // remaining C0 control chars are ctrl+letter (0x01 == ctrl+a)
+            if (codepoint >= 0x01 and codepoint <= 0x1A) return .{ .ctrl = @intCast(codepoint - 0x01 + 'a') };
             return .{ .codepoint = codepoint };
         }
         return null;

@@ -217,6 +217,68 @@ test "StreamTerminal parses a CSI arrow key" {
     try std.testing.expectEqual(@as(?inp.Key, .arrow_up), terminal.popKey());
 }
 
+test "StreamTerminal parses ctrl+letter" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    // ctrl+a and ctrl+r are C0 control chars
+    try terminal.writeBytes("\x01\x12");
+    try std.testing.expectEqual(@as(?inp.Key, .{ .ctrl = 'a' }), terminal.popKey());
+    try std.testing.expectEqual(@as(?inp.Key, .{ .ctrl = 'r' }), terminal.popKey());
+
+    // ctrl+h, ctrl+i, and ctrl+m still arrive as their named keys
+    try terminal.writeBytes("\x08\x09\x0D");
+    try std.testing.expectEqual(@as(?inp.Key, .backspace), terminal.popKey());
+    try std.testing.expectEqual(@as(?inp.Key, .tab), terminal.popKey());
+    try std.testing.expectEqual(@as(?inp.Key, .enter), terminal.popKey());
+}
+
+test "StreamTerminal parses alt+letter" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    try terminal.writeBytes("\x1Bx");
+    try std.testing.expectEqual(@as(?inp.Key, .{ .alt = 'x' }), terminal.popKey());
+
+    // a bare ESC is still the escape key
+    try terminal.writeBytes("\x1B");
+    try std.testing.expectEqual(@as(?inp.Key, .escape), terminal.popKey());
+}
+
+test "StreamTerminal parses function keys and insert" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    // F1 — SS3 style
+    try terminal.writeBytes("\x1BOP");
+    try std.testing.expectEqual(@as(?inp.Key, .{ .f = 1 }), terminal.popKey());
+
+    // F2 — old xterm/rxvt CSI style
+    try terminal.writeBytes("\x1B[12~");
+    try std.testing.expectEqual(@as(?inp.Key, .{ .f = 2 }), terminal.popKey());
+
+    // F5 and F12 — CSI style, with the historical gaps in the code sequence
+    try terminal.writeBytes("\x1B[15~");
+    try std.testing.expectEqual(@as(?inp.Key, .{ .f = 5 }), terminal.popKey());
+    try terminal.writeBytes("\x1B[24~");
+    try std.testing.expectEqual(@as(?inp.Key, .{ .f = 12 }), terminal.popKey());
+
+    try terminal.writeBytes("\x1B[2~");
+    try std.testing.expectEqual(@as(?inp.Key, .insert), terminal.popKey());
+}
+
 test "StreamTerminal parses codepoints and queues extras" {
     const allocator = std.testing.allocator;
     var output: std.Io.Writer.Allocating = .init(allocator);
