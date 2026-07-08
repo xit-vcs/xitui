@@ -1289,6 +1289,21 @@ pub fn Scroll(comptime Widget: type) type {
             }
         }
 
+        // keep the scroll offsets within the content, using the last build's
+        // grids. the bar's reserved column/row isn't part of the content
+        // viewport, so exclude it (as scrollToRect does) or the last
+        // column/row stays unreachable.
+        pub fn clampToContent(self: *Scroll(Widget)) void {
+            const vp = self.grid orelse return;
+            const content = self.child.getGrid() orelse return;
+            const view_w = vp.size.width - self.bar_w;
+            const view_h = vp.size.height - self.bar_h;
+            const max_y: isize = if (content.size.height > view_h) @intCast(content.size.height - view_h) else 0;
+            const max_x: isize = if (content.size.width > view_w) @intCast(content.size.width - view_w) else 0;
+            self.y = std.math.clamp(self.y, 0, max_y);
+            self.x = std.math.clamp(self.x, 0, max_x);
+        }
+
         pub fn getFocus(self: *Scroll(Widget)) *Focus {
             return self.child.getFocus();
         }
