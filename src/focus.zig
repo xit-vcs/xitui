@@ -11,6 +11,7 @@ pub const FocusKind = union(enum) {
     text_box,
     text_input,
     text_input_password,
+    text_area,
     custom: []const u8,
 };
 

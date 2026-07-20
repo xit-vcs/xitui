@@ -132,6 +132,13 @@ const WidgetList = struct {
         }
 
         {
+            var text_input = try wgt.TextInput(Widget).init(allocator, .{ .label = "description", .multiline = true, .visible_height = 3 });
+            errdefer text_input.deinit(allocator);
+            text_input.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
+        }
+
+        {
             var text_box = try wgt.TextBox(Widget).init(allocator, "this is a TextBox", .{ .border_style = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;
@@ -199,6 +206,20 @@ const WidgetList = struct {
                 if (focused.* == .text_input) {
                     switch (key) {
                         .codepoint, .arrow_left, .arrow_right, .home, .end, .delete, .backspace => {
+                            try focused.input(allocator, key, root_focus);
+                            return;
+                        },
+                        .enter => if (focused.text_input.options.multiline) {
+                            try focused.input(allocator, key, root_focus);
+                            return;
+                        },
+                        // up/down move the cursor while it has a row to go
+                        // to; at the edge they fall through to a focus move
+                        .arrow_up => if (!try focused.text_input.cursorOnFirstRow(allocator)) {
+                            try focused.input(allocator, key, root_focus);
+                            return;
+                        },
+                        .arrow_down => if (!try focused.text_input.cursorOnLastRow(allocator)) {
                             try focused.input(allocator, key, root_focus);
                             return;
                         },
