@@ -11,6 +11,7 @@ pub const Widget = union(enum) {
     text: wgt.Text(Widget),
     box: wgt.Box(Widget),
     text_box: wgt.TextBox(Widget),
+    text_input: wgt.TextInput(Widget),
     scroll: wgt.Scroll(Widget),
 
     pub fn deinit(self: *Widget, allocator: std.mem.Allocator) void {
@@ -133,6 +134,153 @@ test "text box with wrapping" {
             \\└──────────┘
         , str);
     }
+}
+
+test "text box with wide characters" {
+    const allocator = std.testing.allocator;
+
+    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "你好, world!", .{ .border_style = .single, .wrap_kind = .none }) };
+    defer widget.deinit(allocator);
+
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = null, .height = null },
+    }, widget.getFocus());
+
+    const str = try widget.getGrid().?.toString(allocator);
+    defer allocator.free(str);
+
+    // 你好 occupies four columns, so the border must span 12, not 10
+    try std.testing.expectEqualStrings(
+        \\┌────────────┐
+        \\│你好, world!│
+        \\└────────────┘
+    , str);
+}
+
+test "text box char-wraps wide characters by columns" {
+    const allocator = std.testing.allocator;
+
+    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "你好世界", .{ .border_style = .single, .wrap_kind = .char }) };
+    defer widget.deinit(allocator);
+
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 6, .height = null },
+    }, widget.getFocus());
+
+    const str = try widget.getGrid().?.toString(allocator);
+    defer allocator.free(str);
+
+    // four wide runes are eight columns: two per line at inner width 4
+    try std.testing.expectEqualStrings(
+        \\┌────┐
+        \\│你好│
+        \\│世界│
+        \\└────┘
+    , str);
+}
+
+test "text box wraps a wide character that does not fit the last column" {
+    const allocator = std.testing.allocator;
+
+    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "ab你好", .{ .border_style = .single, .wrap_kind = .char }) };
+    defer widget.deinit(allocator);
+
+    // inner width 5: "ab" (2) + 你 (2) fit, but 好 would straddle the edge,
+    // so it wraps early and leaves the fifth column blank
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 7, .height = null },
+    }, widget.getFocus());
+
+    const str = try widget.getGrid().?.toString(allocator);
+    defer allocator.free(str);
+
+    try std.testing.expectEqualStrings(
+        \\┌────┐
+        \\│ab你│
+        \\│好  │
+        \\└────┘
+    , str);
+}
+
+test "text box word-wraps an unbroken wide run by columns" {
+    const allocator = std.testing.allocator;
+
+    // no spaces to break at, so the run is longer than a line and falls
+    // back to char-wrapping — which must count columns, not codepoints
+    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "你好世界你好", .{ .border_style = .single, .wrap_kind = .word }) };
+    defer widget.deinit(allocator);
+
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 6, .height = null },
+    }, widget.getFocus());
+
+    const str = try widget.getGrid().?.toString(allocator);
+    defer allocator.free(str);
+
+    try std.testing.expectEqualStrings(
+        \\┌────┐
+        \\│你好│
+        \\│世界│
+        \\│你好│
+        \\└────┘
+    , str);
+}
+
+test "horizontal scroll clips wide characters at the view edges" {
+    const allocator = std.testing.allocator;
+
+    const text = Widget{ .text = try wgt.Text(Widget).init(allocator, "你好世界") };
+    var widget = Widget{ .scroll = try wgt.Scroll(Widget).init(allocator, text, .{ .direction = .horiz, .show_bar = false }) };
+    defer widget.deinit(allocator);
+
+    // viewport of 3 columns at offset 0: 你 fits, 好's lead is cut at the
+    // right edge and renders as a blank column
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 3, .height = 1 },
+    }, widget.getFocus());
+
+    {
+        const str = try widget.getGrid().?.toString(allocator);
+        defer allocator.free(str);
+        try std.testing.expectEqualStrings("你 ", str);
+    }
+
+    // offset 1: the left edge lands mid-你, blanking its trailing half
+    widget.scroll.x = 1;
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 3, .height = 1 },
+    }, widget.getFocus());
+
+    {
+        const str = try widget.getGrid().?.toString(allocator);
+        defer allocator.free(str);
+        try std.testing.expectEqualStrings(" 好", str);
+    }
+}
+
+test "text input scrolls wide content by columns" {
+    const allocator = std.testing.allocator;
+
+    var widget = Widget{ .text_input = try wgt.TextInput(Widget).init(allocator, .{ .border_style = null, .visible_width = 4 }) };
+    defer widget.deinit(allocator);
+
+    // 你(2) 好(2) a b c: the cursor lands past 'c', so the window slides
+    // until the tail fits — 你 and 好 scroll out entirely
+    try widget.text_input.setContent(allocator, "你好abc");
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = null, .height = null },
+    }, widget.getFocus());
+
+    const str = try widget.getGrid().?.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("abc ", str);
 }
 
 test "vertical scroll bar" {

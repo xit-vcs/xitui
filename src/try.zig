@@ -139,6 +139,13 @@ const WidgetList = struct {
         }
 
         {
+            var text_box = try wgt.TextBox(Widget).init(allocator, "双宽字符 (double-width characters)\n你好，世界！こんにちは", .{ .border_style = .single, .wrap_kind = .word });
+            errdefer text_box.deinit(allocator);
+            text_box.getFocus().focusable = true;
+            try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
+        }
+
+        {
             var text_box = try wgt.TextBox(Widget).init(allocator, "this is a TextBox", .{ .border_style = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().focusable = true;

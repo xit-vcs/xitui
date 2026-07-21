@@ -3,6 +3,7 @@ const Grid = @import("./grid.zig").Grid;
 const Focus = @import("./focus.zig").Focus;
 const layout = @import("./layout.zig");
 const inp = @import("./input.zig");
+const wth = @import("./width.zig");
 
 pub fn Text(comptime Widget: type) type {
     return struct {
@@ -36,17 +37,26 @@ pub fn Text(comptime Widget: type) type {
             if (constraint.max_size.height) |max_height| {
                 if (max_height == 0) return;
             }
-            const width = try std.unicode.utf8CountCodepoints(self.content);
-            var grid = try Grid.init(allocator, .{ .width = @max(1, @min(width, constraint.max_size.width orelse width)), .height = 1 });
+            // measure in display columns, not codepoints: wide (e.g. CJK)
+            // runes occupy two cells
+            var content_width: usize = 0;
+            {
+                var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
+                while (utf8.nextCodepointSlice()) |char| {
+                    content_width += wth.cellWidth(char);
+                }
+            }
+            var grid = try Grid.init(allocator, .{ .width = @max(1, @min(content_width, constraint.max_size.width orelse content_width)), .height = 1 });
             errdefer grid.deinit();
             var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
-            var i: u32 = 0;
+            var i: usize = 0;
             while (utf8.nextCodepointSlice()) |char| {
-                if (i == grid.size.width) {
+                const w = wth.cellWidth(char);
+                if (i + w > grid.size.width) {
                     break;
                 }
-                grid.cells.items[try grid.cells.at(.{ 0, i })].rune = char;
-                i += 1;
+                try grid.setRune(i, 0, char);
+                i += w;
             }
             self.grid = grid;
         }
@@ -450,20 +460,20 @@ pub fn Box(comptime Widget: type) type {
                 // top and bottom border
                 for (1..grid.size.width - 1) |x| {
                     if ((border_style == .single_dashed or border_style == .double_dashed) and x % 2 == 1) continue;
-                    grid.cells.items[try grid.cells.at(.{ 0, x })].rune = horiz_line;
-                    grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, x })].rune = horiz_line;
+                    try grid.setRune(x, 0, horiz_line);
+                    try grid.setRune(x, grid.size.height - 1, horiz_line);
                 }
                 // left and right border
                 for (1..grid.size.height - 1) |y| {
                     if ((border_style == .single_dashed or border_style == .double_dashed) and y % 2 == 1) continue;
-                    grid.cells.items[try grid.cells.at(.{ y, 0 })].rune = vert_line;
-                    grid.cells.items[try grid.cells.at(.{ y, grid.size.width - 1 })].rune = vert_line;
+                    try grid.setRune(0, y, vert_line);
+                    try grid.setRune(grid.size.width - 1, y, vert_line);
                 }
                 // corners
-                grid.cells.items[try grid.cells.at(.{ 0, 0 })].rune = top_left_corner;
-                grid.cells.items[try grid.cells.at(.{ 0, grid.size.width - 1 })].rune = top_right_corner;
-                grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, 0 })].rune = bottom_left_corner;
-                grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, grid.size.width - 1 })].rune = bottom_right_corner;
+                try grid.setRune(0, 0, top_left_corner);
+                try grid.setRune(grid.size.width - 1, 0, top_right_corner);
+                try grid.setRune(0, grid.size.height - 1, bottom_left_corner);
+                try grid.setRune(grid.size.width - 1, grid.size.height - 1, bottom_right_corner);
             }
 
             // set grid
@@ -605,30 +615,42 @@ pub fn TextBox(comptime Widget: type) type {
                             .char => {
                                 var line: std.ArrayList(u8) = .empty;
                                 errdefer line.deinit(allocator);
+                                var line_w: usize = 0;
 
                                 var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
                                 while (utf8.nextCodepointSlice()) |char| {
                                     if (std.mem.eql(u8, char, "\n")) {
                                         try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                        line_w = 0;
                                     } else {
+                                        const w = wth.cellWidth(char);
+                                        // a wide rune that doesn't fit the remaining
+                                        // columns wraps early, leaving the last
+                                        // column blank
+                                        if (line_w > 0 and line_w + w > inner_width) {
+                                            try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                            line_w = 0;
+                                        }
                                         try line.appendSlice(allocator, char);
+                                        line_w += w;
                                     }
 
                                     if (std.mem.eql(u8, utf8.peek(1), "")) {
                                         try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                    } else if (try std.unicode.utf8CountCodepoints(line.items) == inner_width) {
+                                    } else if (line_w >= inner_width) {
                                         try self.lines.append(allocator, try line.toOwnedSlice(allocator));
+                                        line_w = 0;
                                     }
                                 }
                             },
                             .word => {
                                 var line: std.ArrayList(u8) = .empty;
                                 errdefer line.deinit(allocator);
-                                var line_cp: usize = 0;
+                                var line_w: usize = 0;
 
                                 var word: std.ArrayList(u8) = .empty;
                                 defer word.deinit(allocator);
-                                var word_cp: usize = 0;
+                                var word_w: usize = 0;
 
                                 var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
                                 while (utf8.nextCodepointSlice()) |cp| {
@@ -636,28 +658,28 @@ pub fn TextBox(comptime Widget: type) type {
                                     const is_space = std.mem.eql(u8, cp, " ") or std.mem.eql(u8, cp, "\t");
 
                                     if (is_newline or is_space) {
-                                        try flushPendingWord(allocator, &self.lines, &line, &line_cp, &word, &word_cp, inner_width);
+                                        try flushPendingWord(allocator, &self.lines, &line, &line_w, &word, &word_w, inner_width);
                                     }
 
                                     if (is_newline) {
                                         try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                        line_cp = 0;
+                                        line_w = 0;
                                     } else if (is_space) {
                                         // collapse spaces at the start of a line; otherwise keep
                                         // the separator and drop trailing spaces past the edge.
-                                        if (line_cp > 0 and line_cp < inner_width) {
+                                        if (line_w > 0 and line_w < inner_width) {
                                             try line.appendSlice(allocator, cp);
-                                            line_cp += 1;
+                                            line_w += 1;
                                         }
                                     } else {
                                         try word.appendSlice(allocator, cp);
-                                        word_cp += 1;
+                                        word_w += wth.cellWidth(cp);
                                     }
 
                                     if (std.mem.eql(u8, utf8.peek(1), "")) {
-                                        try flushPendingWord(allocator, &self.lines, &line, &line_cp, &word, &word_cp, inner_width);
+                                        try flushPendingWord(allocator, &self.lines, &line, &line_w, &word, &word_w, inner_width);
                                         try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                        line_cp = 0;
+                                        line_w = 0;
                                     }
                                 }
                             },
@@ -707,44 +729,45 @@ pub fn TextBox(comptime Widget: type) type {
             allocator: std.mem.Allocator,
             lines: *std.ArrayList([]const u8),
             line: *std.ArrayList(u8),
-            line_cp: *usize,
+            line_w: *usize,
             word: *std.ArrayList(u8),
-            word_cp: *usize,
+            word_w: *usize,
             inner_width: usize,
         ) !void {
-            if (word_cp.* == 0) return;
+            if (word_w.* == 0) return;
 
-            if (line_cp.* + word_cp.* <= inner_width) {
+            if (line_w.* + word_w.* <= inner_width) {
                 try line.appendSlice(allocator, word.items);
-                line_cp.* += word_cp.*;
-            } else if (word_cp.* <= inner_width) {
+                line_w.* += word_w.*;
+            } else if (word_w.* <= inner_width) {
                 // wrap to a fresh line so the word stays intact
-                if (line_cp.* > 0) {
+                if (line_w.* > 0) {
                     try lines.append(allocator, try line.toOwnedSlice(allocator));
-                    line_cp.* = 0;
+                    line_w.* = 0;
                 }
                 try line.appendSlice(allocator, word.items);
-                line_cp.* = word_cp.*;
+                line_w.* = word_w.*;
             } else {
                 // word is longer than a whole line — fall back to char-wrap so
                 // it at least renders rather than disappearing past the edge.
-                if (line_cp.* > 0) {
+                if (line_w.* > 0) {
                     try lines.append(allocator, try line.toOwnedSlice(allocator));
-                    line_cp.* = 0;
+                    line_w.* = 0;
                 }
                 var w_utf8 = (try std.unicode.Utf8View.init(word.items)).iterator();
                 while (w_utf8.nextCodepointSlice()) |c| {
-                    if (line_cp.* == inner_width) {
+                    const w = wth.cellWidth(c);
+                    if (line_w.* > 0 and line_w.* + w > inner_width) {
                         try lines.append(allocator, try line.toOwnedSlice(allocator));
-                        line_cp.* = 0;
+                        line_w.* = 0;
                     }
                     try line.appendSlice(allocator, c);
-                    line_cp.* += 1;
+                    line_w.* += w;
                 }
             }
 
             word.clearRetainingCapacity();
-            word_cp.* = 0;
+            word_w.* = 0;
         }
     };
 }
@@ -863,9 +886,25 @@ pub fn TextInput(comptime Widget: type) type {
             return buf;
         }
 
+        // display columns the codepoint at content index i occupies on
+        // screen. password mode renders a bullet regardless of the hidden
+        // codepoint, so everything is one column there.
+        fn contentCellWidth(self: *const TextInput(Widget), i: usize) usize {
+            if (self.options.password) return 1;
+            return wth.cellWidth(self.content.items[i]);
+        }
+
+        // display columns of the content range [start, end)
+        fn columnsBetween(self: *const TextInput(Widget), start: usize, end: usize) usize {
+            var total: usize = 0;
+            for (start..end) |i| total += self.contentCellWidth(i);
+            return total;
+        }
+
         // rebuild row_starts: the content index where each visual row begins.
         // rows break on "\n" (kept in the row, stripped for display) and soft
-        // word-wrap at wrap_width, so every index lands in exactly one row.
+        // word-wrap at wrap_width display columns, so every index lands in
+        // exactly one row.
         fn computeRowStarts(self: *TextInput(Widget), allocator: std.mem.Allocator, wrap_width: usize) !void {
             self.row_starts.clearRetainingCapacity();
             try self.row_starts.append(allocator, 0);
@@ -878,23 +917,27 @@ pub fn TextInput(comptime Widget: type) type {
                     last_space = null;
                     continue;
                 }
-                if (col == wrap_width) {
+                const w = self.contentCellWidth(i);
+                if (col > 0 and col + w > wrap_width) {
                     // break after the row's last space if it has one,
                     // otherwise char-wrap
                     const start = if (last_space) |space| space + 1 else i;
                     try self.row_starts.append(allocator, start);
-                    col = i - start;
+                    col = self.columnsBetween(start, i);
                     last_space = null;
                 }
                 if (std.mem.eql(u8, cp, " ")) last_space = i;
-                col += 1;
+                col += w;
             }
         }
 
-        fn cursorRowCol(self: *const TextInput(Widget)) struct { row: usize, col: usize } {
+        // the cursor's visual row and its codepoint offset within that row.
+        // offset is an index distance, not a screen column — columnsBetween
+        // converts it when drawing.
+        fn cursorRowCol(self: *const TextInput(Widget)) struct { row: usize, offset: usize } {
             var row = self.row_starts.items.len - 1;
             while (self.row_starts.items[row] > self.cursor) row -= 1;
-            return .{ .row = row, .col = self.cursor - self.row_starts.items[row] };
+            return .{ .row = row, .offset = self.cursor - self.row_starts.items[row] };
         }
 
         // the largest cursor index on the row: its "\n" (or last soft-wrapped
@@ -953,11 +996,21 @@ pub fn TextInput(comptime Widget: type) type {
                 return;
             }
 
-            // keep cursor inside the visible window
+            // keep the cursor inside the visible window, measured in display
+            // columns (a wide rune fills two)
             if (self.cursor < self.scroll_offset) {
                 self.scroll_offset = self.cursor;
-            } else if (self.cursor >= self.scroll_offset + inner_width) {
-                self.scroll_offset = self.cursor + 1 - inner_width;
+            } else {
+                // the cursor's own cell: a content rune, or one trailing
+                // space column when it sits past the end. the window can
+                // land at most on the cursor itself — a wide cursor rune in
+                // a one-column window just doesn't render.
+                const cursor_w: usize = if (self.cursor < self.content.items.len) self.contentCellWidth(self.cursor) else 1;
+                while (self.scroll_offset < self.cursor and
+                    self.columnsBetween(self.scroll_offset, self.cursor) + cursor_w > inner_width)
+                {
+                    self.scroll_offset += 1;
+                }
             }
 
             var grid = try Grid.init(allocator, .{ .width = width, .height = height });
@@ -967,22 +1020,29 @@ pub fn TextInput(comptime Widget: type) type {
 
             // text + cursor (skipped when an external overlay owns the display)
             if (self.options.render_content) {
-                for (0..inner_width) |i| {
-                    const content_index = self.scroll_offset + i;
-                    const cell_x = i + border_size;
-                    const cell_y = border_size;
-                    const cell_idx = try grid.cells.at(.{ cell_y, cell_x });
+                var col: usize = 0;
+                var content_index = self.scroll_offset;
+                const cell_y = border_size;
+                while (col < inner_width) {
+                    const cell_x = col + border_size;
                     if (content_index < self.content.items.len) {
-                        grid.cells.items[cell_idx].rune = if (self.options.password) "•" else self.content.items[content_index];
-                    } else if (content_index == self.content.items.len and self.cursor == content_index and has_focus) {
-                        // cursor sits past the last char — paint a space underneath
-                        grid.cells.items[cell_idx].rune = " ";
-                    }
-                    if (content_index == self.cursor and has_focus) {
-                        grid.cells.items[cell_idx].style.inverted = true;
-                        if (grid.cells.items[cell_idx].rune == null) {
-                            grid.cells.items[cell_idx].rune = " ";
+                        const w = self.contentCellWidth(content_index);
+                        // a wide rune that doesn't fit the last column is
+                        // left undrawn
+                        if (col + w > inner_width) break;
+                        try grid.setRune(cell_x, cell_y, if (self.options.password) "•" else self.content.items[content_index]);
+                        if (content_index == self.cursor and has_focus) {
+                            grid.cells.items[try grid.cells.at(.{ cell_y, cell_x })].style.inverted = true;
                         }
+                        col += w;
+                        content_index += 1;
+                    } else {
+                        if (self.cursor == content_index and has_focus) {
+                            // cursor sits past the last char — paint a space underneath
+                            try grid.setRune(cell_x, cell_y, " ");
+                            grid.cells.items[try grid.cells.at(.{ cell_y, cell_x })].style.inverted = true;
+                        }
+                        break;
                     }
                 }
             }
@@ -1054,19 +1114,26 @@ pub fn TextInput(comptime Widget: type) type {
                     const start = self.row_starts.items[row];
                     var end = if (row + 1 < rows) self.row_starts.items[row + 1] else self.content.items.len;
                     if (end > start and std.mem.eql(u8, self.content.items[end - 1], "\n")) end -= 1;
-                    for (self.content.items[start..end], 0..) |cp, col| {
-                        if (col >= content_width) break;
-                        const cell_idx = try grid.cells.at(.{ border_size + view_row, border_size + col });
-                        grid.cells.items[cell_idx].rune = if (self.options.password) "•" else cp;
+                    var col: usize = 0;
+                    for (start..end) |i| {
+                        const w = self.contentCellWidth(i);
+                        if (col + w > content_width) break;
+                        try grid.setRune(border_size + col, border_size + view_row, if (self.options.password) "•" else self.content.items[i]);
+                        col += w;
                     }
                 }
 
-                if (has_focus and rc.col < inner_width - bar) {
-                    const view_row = rc.row - self.row_offset;
-                    const cell_idx = try grid.cells.at(.{ border_size + view_row, border_size + rc.col });
-                    grid.cells.items[cell_idx].style.inverted = true;
-                    if (grid.cells.items[cell_idx].rune == null) {
-                        grid.cells.items[cell_idx].rune = " ";
+                if (has_focus) {
+                    // the cursor's screen column within its row (its offset
+                    // counts codepoints, so convert to display columns)
+                    const cur_col = self.columnsBetween(self.row_starts.items[rc.row], self.cursor);
+                    if (cur_col < inner_width - bar) {
+                        const view_row = rc.row - self.row_offset;
+                        const cell_idx = try grid.cells.at(.{ border_size + view_row, border_size + cur_col });
+                        if (grid.cells.items[cell_idx].rune == null and !grid.cells.items[cell_idx].continuation) {
+                            try grid.setRune(border_size + cur_col, border_size + view_row, " ");
+                        }
+                        grid.cells.items[cell_idx].style.inverted = true;
                     }
                 }
 
@@ -1087,8 +1154,7 @@ pub fn TextInput(comptime Widget: type) type {
                         break :blk @intFromFloat(@round(max_start_f * offset_f / max_offset_f));
                     };
                     for (0..track_len) |view_row| {
-                        const cell_idx = try grid.cells.at(.{ border_size + view_row, border_size + inner_width - 1 });
-                        grid.cells.items[cell_idx].rune = if (view_row >= thumb_start and view_row < thumb_start + thumb_len) "█" else "░";
+                        try grid.setRune(border_size + inner_width - 1, border_size + view_row, if (view_row >= thumb_start and view_row < thumb_start + thumb_len) "█" else "░");
                     }
                 }
             }
@@ -1133,27 +1199,28 @@ pub fn TextInput(comptime Widget: type) type {
             };
             for (1..grid.size.width - 1) |x| {
                 if ((border_style == .single_dashed or border_style == .double_dashed) and x % 2 == 1) continue;
-                grid.cells.items[try grid.cells.at(.{ 0, x })].rune = horiz_line;
-                grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, x })].rune = horiz_line;
+                try grid.setRune(x, 0, horiz_line);
+                try grid.setRune(x, grid.size.height - 1, horiz_line);
             }
             for (1..grid.size.height - 1) |y| {
                 if ((border_style == .single_dashed or border_style == .double_dashed) and y % 2 == 0) continue;
-                grid.cells.items[try grid.cells.at(.{ y, 0 })].rune = vert_line;
-                grid.cells.items[try grid.cells.at(.{ y, grid.size.width - 1 })].rune = vert_line;
+                try grid.setRune(0, y, vert_line);
+                try grid.setRune(grid.size.width - 1, y, vert_line);
             }
-            grid.cells.items[try grid.cells.at(.{ 0, 0 })].rune = top_left;
-            grid.cells.items[try grid.cells.at(.{ 0, grid.size.width - 1 })].rune = top_right;
-            grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, 0 })].rune = bottom_left;
-            grid.cells.items[try grid.cells.at(.{ grid.size.height - 1, grid.size.width - 1 })].rune = bottom_right;
+            try grid.setRune(0, 0, top_left);
+            try grid.setRune(grid.size.width - 1, 0, top_right);
+            try grid.setRune(0, grid.size.height - 1, bottom_left);
+            try grid.setRune(grid.size.width - 1, grid.size.height - 1, bottom_right);
 
             // overlay the label on the top border, truncating to fit
             if (label.len > 0 and grid.size.width > 2) {
                 var label_iter = (try std.unicode.Utf8View.init(label)).iterator();
                 var x: usize = 1;
                 while (label_iter.nextCodepointSlice()) |ch| {
-                    if (x >= grid.size.width - 1) break;
-                    grid.cells.items[try grid.cells.at(.{ 0, x })].rune = ch;
-                    x += 1;
+                    const w = wth.cellWidth(ch);
+                    if (x + w > grid.size.width - 1) break;
+                    try grid.setRune(x, 0, ch);
+                    x += w;
                 }
             }
         }
@@ -1175,10 +1242,10 @@ pub fn TextInput(comptime Widget: type) type {
                         const rc = self.cursorRowCol();
                         switch (key) {
                             .arrow_up => if (rc.row > 0) {
-                                self.cursor = @min(self.row_starts.items[rc.row - 1] + rc.col, self.rowMaxIndex(rc.row - 1));
+                                self.cursor = @min(self.row_starts.items[rc.row - 1] + rc.offset, self.rowMaxIndex(rc.row - 1));
                             },
                             .arrow_down => if (rc.row + 1 < self.row_starts.items.len) {
-                                self.cursor = @min(self.row_starts.items[rc.row + 1] + rc.col, self.rowMaxIndex(rc.row + 1));
+                                self.cursor = @min(self.row_starts.items[rc.row + 1] + rc.offset, self.rowMaxIndex(rc.row + 1));
                             },
                             .home => self.cursor = self.row_starts.items[rc.row],
                             .end => self.cursor = self.rowMaxIndex(rc.row),
@@ -1440,16 +1507,14 @@ pub fn Scroll(comptime Widget: type) type {
                         const thumb = scrollBarThumb(content_h, child_grid.size.height, content_h, self.y);
                         const bar_x = content_w;
                         for (0..content_h) |row| {
-                            full.cells.items[try full.cells.at(.{ row, bar_x })].rune =
-                                if (row >= thumb.start and row < thumb.start + thumb.len) thumb_rune else track_rune;
+                            try full.setRune(bar_x, row, if (row >= thumb.start and row < thumb.start + thumb.len) thumb_rune else track_rune);
                         }
                     }
                     if (reserve_h == 1) {
                         const thumb = scrollBarThumb(content_w, child_grid.size.width, content_w, self.x);
                         const bar_y = content_h;
                         for (0..content_w) |col| {
-                            full.cells.items[try full.cells.at(.{ bar_y, col })].rune =
-                                if (col >= thumb.start and col < thumb.start + thumb.len) thumb_rune else track_rune;
+                            try full.setRune(col, bar_y, if (col >= thumb.start and col < thumb.start + thumb.len) thumb_rune else track_rune);
                         }
                     }
                     self.grid = full;

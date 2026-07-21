@@ -1,5 +1,6 @@
 const std = @import("std");
 const layout = @import("./layout.zig");
+const wth = @import("./width.zig");
 const NDSlice = @import("./ndslice.zig").NDSlice;
 
 pub const Grid = struct {
@@ -50,8 +51,13 @@ pub const Grid = struct {
     pub const Cell = struct {
         rune: ?[]const u8,
         style: Style = .{},
+        // this cell is the second column of a double-width rune held by the
+        // cell to its left. rune is always null, but the column is occupied,
+        // not empty — the renderer must neither draw nor clear it.
+        continuation: bool = false,
 
         pub fn eql(self: Cell, other: Cell) bool {
+            if (self.continuation != other.continuation) return false;
             if (!self.style.eql(other.style)) return false;
             if (self.rune) |rune| {
                 if (other.rune) |other_rune| {
@@ -99,7 +105,20 @@ pub const Grid = struct {
             for (ugrid_x..ugrid_x + size.width) |source_x| {
                 if (cells.at(.{ dest_y, dest_x })) |dest_index| {
                     if (grid.cells.at(.{ source_y, source_x })) |source_index| {
-                        cells.items[dest_index] = grid.cells.items[source_index];
+                        var src = grid.cells.items[source_index];
+                        // a wide pair split by the view's left or right edge
+                        // renders as a blank column — half a glyph can't be
+                        // drawn
+                        if (src.continuation and source_x == ugrid_x) {
+                            src = .{ .rune = " ", .style = src.style };
+                        } else if (source_x + 1 == ugrid_x + size.width) {
+                            if (grid.cells.at(.{ source_y, source_x + 1 })) |next_index| {
+                                if (grid.cells.items[next_index].continuation) {
+                                    src = .{ .rune = " ", .style = src.style };
+                                }
+                            } else |_| {}
+                        }
+                        cells.items[dest_index] = src;
                     } else |_| {
                         break;
                     }
@@ -150,13 +169,73 @@ pub const Grid = struct {
         return new_grid;
     }
 
+    // blank the surviving half of any wide-rune pair the cell at (x, y)
+    // belongs to, in preparation for overwriting that cell. the orphaned half
+    // becomes a space — the column stays occupied, but half a glyph can't be
+    // drawn. the cell itself is left for the caller to overwrite.
+    fn blankPartner(self: *Grid, x: usize, y: usize) void {
+        const index = self.cells.at(.{ y, x }) catch return;
+        if (self.cells.items[index].continuation) {
+            // (x - 1) holds the wide rune this cell completes. a continuation
+            // never sits in column 0, but stay safe against hand-built grids.
+            if (x == 0) return;
+            const lead_index = self.cells.at(.{ y, x - 1 }) catch return;
+            self.cells.items[lead_index].rune = " ";
+            self.cells.items[lead_index].continuation = false;
+        } else {
+            // if (x + 1) is a continuation, this cell is its wide lead
+            const cont_index = self.cells.at(.{ y, x + 1 }) catch return;
+            if (self.cells.items[cont_index].continuation) {
+                self.cells.items[cont_index].rune = " ";
+                self.cells.items[cont_index].continuation = false;
+            }
+        }
+    }
+
+    // write `rune` (null to empty the cell) at column x, row y, keeping
+    // double-width pairs consistent: a wide rune claims (x + 1) as a
+    // continuation cell, and overwriting either half of an existing pair
+    // blanks the orphaned half to a space. a wide rune against the right
+    // edge, with no room for its continuation, becomes a space too. the
+    // cell's style is left untouched.
+    pub fn setRune(self: *Grid, x: usize, y: usize, rune: ?[]const u8) !void {
+        const index = try self.cells.at(.{ y, x });
+        self.blankPartner(x, y);
+        self.cells.items[index].continuation = false;
+        if (rune != null and wth.cellWidth(rune.?) == 2) {
+            if (self.cells.at(.{ y, x + 1 })) |cont_index| {
+                self.blankPartner(x + 1, y);
+                self.cells.items[index].rune = rune;
+                self.cells.items[cont_index].rune = null;
+                self.cells.items[cont_index].continuation = true;
+                self.cells.items[cont_index].style = self.cells.items[index].style;
+            } else |_| {
+                self.cells.items[index].rune = " ";
+            }
+        } else {
+            self.cells.items[index].rune = rune;
+        }
+    }
+
     pub fn drawGrid(self: *Grid, child_grid: Grid, target_x: usize, target_y: usize) !void {
         for (0..child_grid.size.height) |y| {
             for (0..child_grid.size.width) |x| {
                 const src = child_grid.cells.items[try child_grid.cells.at(.{ y, x })];
                 if (self.cells.at(.{ y + target_y, x + target_x })) |index| {
+                    // blank the outside half of any wide pair this write
+                    // splits (the inside half is overwritten by the copy)
+                    self.blankPartner(x + target_x, y + target_y);
                     self.cells.items[index] = src;
                 } else |_| {
+                    // clipped by our right edge: if the cell that didn't fit
+                    // was a continuation, its wide lead landed in our last
+                    // column as half a glyph — blank it
+                    if (src.continuation and x > 0) {
+                        if (self.cells.at(.{ y + target_y, x + target_x - 1 })) |lead_index| {
+                            self.cells.items[lead_index].rune = " ";
+                            self.cells.items[lead_index].continuation = false;
+                        } else |_| {}
+                    }
                     break;
                 }
             }
@@ -173,7 +252,10 @@ pub const Grid = struct {
 
         for (0..self.size.height) |y| {
             for (0..self.size.width) |x| {
-                if (self.cells.items[try self.cells.at(.{ y, x })].rune) |rune| {
+                const cell = self.cells.items[try self.cells.at(.{ y, x })];
+                // the wide rune to the left already covers this column
+                if (cell.continuation) continue;
+                if (cell.rune) |rune| {
                     for (rune) |byte| {
                         try buffer.append(allocator, byte);
                     }
@@ -195,4 +277,69 @@ test {
     var grid = try Grid.init(allocator, .{ .width = 10, .height = 10 });
     defer grid.deinit();
     try std.testing.expectEqual(null, grid.cells.items[try grid.cells.at(.{ 0, 0 })].rune);
+}
+
+test "setRune keeps wide pairs consistent" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, .{ .width = 4, .height = 1 });
+    defer grid.deinit();
+
+    // a wide rune claims its continuation cell
+    try grid.setRune(0, 0, "中");
+    try std.testing.expectEqualStrings("中", grid.cells.items[0].rune.?);
+    try std.testing.expect(grid.cells.items[1].continuation);
+    try std.testing.expectEqual(null, grid.cells.items[1].rune);
+
+    // overwriting the continuation blanks the orphaned lead
+    try grid.setRune(1, 0, "x");
+    try std.testing.expectEqualStrings(" ", grid.cells.items[0].rune.?);
+    try std.testing.expect(!grid.cells.items[1].continuation);
+    try std.testing.expectEqualStrings("x", grid.cells.items[1].rune.?);
+
+    // overwriting the lead blanks the orphaned continuation
+    try grid.setRune(0, 0, "中");
+    try grid.setRune(0, 0, "y");
+    try std.testing.expectEqualStrings("y", grid.cells.items[0].rune.?);
+    try std.testing.expect(!grid.cells.items[1].continuation);
+    try std.testing.expectEqualStrings(" ", grid.cells.items[1].rune.?);
+
+    // a wide rune against the right edge has no room for its continuation
+    try grid.setRune(3, 0, "中");
+    try std.testing.expectEqualStrings(" ", grid.cells.items[3].rune.?);
+}
+
+test "toString skips continuation cells" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, .{ .width = 3, .height = 1 });
+    defer grid.deinit();
+    try grid.setRune(0, 0, "中");
+    try grid.setRune(2, 0, "a");
+
+    const str = try grid.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("中a", str);
+}
+
+test "initFromGrid blanks wide pairs split by the view edge" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, .{ .width = 6, .height = 1 });
+    defer grid.deinit();
+    // 你(0,1) 好(2,3) a(4)
+    try grid.setRune(0, 0, "你");
+    try grid.setRune(2, 0, "好");
+    try grid.setRune(4, 0, "a");
+
+    // view [1, 4): 你's continuation at the left edge, 好 intact
+    var view = try Grid.initFromGrid(allocator, grid, .{ .width = 3, .height = 1 }, 1, 0);
+    defer view.deinit();
+    const left = try view.toString(allocator);
+    defer allocator.free(left);
+    try std.testing.expectEqualStrings(" 好", left);
+
+    // view [0, 3): 好's lead at the right edge loses its continuation
+    var view2 = try Grid.initFromGrid(allocator, grid, .{ .width = 3, .height = 1 }, 0, 0);
+    defer view2.deinit();
+    const right = try view2.toString(allocator);
+    defer allocator.free(right);
+    try std.testing.expectEqualStrings("你 ", right);
 }

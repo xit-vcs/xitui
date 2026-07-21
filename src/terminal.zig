@@ -734,7 +734,9 @@ pub fn renderToWriter(
             for (0..last_grid.size.height) |y| {
                 for (0..last_grid.size.width) |x| {
                     const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
-                    if (cell.rune == null) {
+                    // a continuation column is occupied by the wide rune to
+                    // its left, not empty — clearing it would chop the glyph
+                    if (cell.rune == null and !cell.continuation) {
                         try writeAt(writer, " ", .{}, x, y, size.height);
                     }
 
