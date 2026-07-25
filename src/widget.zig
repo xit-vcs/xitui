@@ -811,8 +811,8 @@ pub fn TextInput(comptime Widget: type) type {
             // longer content scrolls (null = grow with the content, bounded
             // only by the constraint)
             visible_height: ?usize = null,
-            // options for multiline scrolling; only show_bar and web_native
-            // are honored
+            // options for multiline scrolling; only fill, show_bar, and
+            // web_native are honored
             scroll: Scroll(Widget).Options = .{},
         };
 
@@ -1056,6 +1056,9 @@ pub fn TextInput(comptime Widget: type) type {
         }
 
         fn viewportRows(self: *const TextInput(Widget), rows: usize, avail_rows: ?usize) usize {
+            if (self.options.scroll.fill) {
+                if (avail_rows) |available| return available;
+            }
             const wanted = if (self.options.visible_height) |v| @max(1, v) else rows;
             return @min(wanted, avail_rows orelse wanted);
         }
