@@ -93,6 +93,15 @@ pub const BorderStyle = enum {
     double_dashed,
 };
 
+// the display columns a label occupies, which a bordered widget needs between
+// its corners to show the whole thing.
+fn labelWidth(label: []const u8) !usize {
+    var width: usize = 0;
+    var label_iter = (try std.unicode.Utf8View.init(label)).iterator();
+    while (label_iter.nextCodepointSlice()) |ch| width += wth.cellWidth(ch);
+    return width;
+}
+
 // overlay a label on the border row at `y`, truncating at the far corner.
 fn drawLabel(grid: *Grid, y: usize, label: []const u8) !void {
     if (label.len == 0 or grid.size.width <= 2) return;
@@ -394,6 +403,15 @@ pub fn Box(comptime Widget: type) type {
             width = @max(width, constraint.min_size.width orelse width);
             height += border_size * 2;
             height = @max(height, constraint.min_size.height orelse height);
+
+            // widen for the labels, up to the width we're allowed
+            if (border_size > 0) {
+                const label_min = @max(try labelWidth(self.options.label), try labelWidth(self.options.bottom_label));
+                if (label_min > 0) {
+                    width = @max(width, label_min + border_size * 2);
+                    if (constraint.max_size.width) |max_width| width = @min(width, max_width);
+                }
+            }
 
             var grid = try Grid.init(allocator, .{ .width = width, .height = height });
             errdefer grid.deinit();
@@ -1007,13 +1025,19 @@ pub fn TextInput(comptime Widget: type) type {
             // width is fixed at the option's visible_width (longer content
             // scrolls horizontally inside it), or fills the constraint. an
             // unbounded fill has no width to take, so it renders nothing.
-            const width: usize = if (self.options.visible_width) |visible_width| blk: {
-                const desired_width = visible_width + border_size * 2;
+            const width: usize = blk: {
+                const visible_width = self.options.visible_width orelse break :blk constraint.max_size.width orelse return;
+                // widen for the labels so they stay visible between the corners
+                const label_min = if (border_size > 0)
+                    @max(try labelWidth(self.options.label), try labelWidth(self.options.bottom_label))
+                else
+                    0;
+                const desired_width = @max(visible_width, label_min) + border_size * 2;
                 break :blk if (constraint.max_size.width) |max_width|
                     @min(desired_width, max_width)
                 else
                     desired_width;
-            } else constraint.max_size.width orelse return;
+            };
 
             if (width <= border_size * 2) return;
 
