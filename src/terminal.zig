@@ -456,8 +456,6 @@ pub const Core = switch (builtin.os.tag) {
                     return .{ .event = .resize };
                 }
 
-                defer self.parser.clearScratch();
-
                 if (self.parser.popQueued()) |key| return key;
 
                 const buffer_size = 32;
@@ -468,7 +466,11 @@ pub const Core = switch (builtin.os.tag) {
                 };
                 if (size == 0) return null;
 
-                return try self.parser.writeBytes(buffer[0..size]);
+                try self.parser.queueBytes(buffer[0..size]);
+                // the tty hands us a whole sequence in one read, so an ESC
+                // still pending was the escape key, not a split sequence
+                try self.parser.flushEscape();
+                return self.parser.popQueued();
             }
         }
     },
@@ -890,6 +892,13 @@ pub const EscapeParser = struct {
     allocator: std.mem.Allocator,
     esc_buffer: std.ArrayList(u8),
     key_queue: std.DoublyLinkedList,
+    // the buffered sequence outgrew esc_buffer. its remaining bytes are still
+    // consumed up to the terminator, then it reports as one unknown key.
+    esc_overflowed: bool,
+
+    // fits the reports terminals send unprompted (device attributes, cursor
+    // position, mode queries); anything longer is swallowed, not parsed.
+    const esc_buffer_size = 128;
 
     const KeyAndNode = struct {
         key: inp.Key,
@@ -899,8 +908,9 @@ pub const EscapeParser = struct {
     pub fn init(allocator: std.mem.Allocator) !EscapeParser {
         return .{
             .allocator = allocator,
-            .esc_buffer = try std.ArrayList(u8).initCapacity(allocator, 32),
+            .esc_buffer = try std.ArrayList(u8).initCapacity(allocator, esc_buffer_size),
             .key_queue = std.DoublyLinkedList{},
+            .esc_overflowed = false,
         };
     }
 
@@ -920,163 +930,172 @@ pub const EscapeParser = struct {
         return key;
     }
 
-    pub fn prepend(self: *EscapeParser, key: inp.Key) !void {
+    fn append(self: *EscapeParser, key: inp.Key) !void {
         const key_and_node = try self.allocator.create(KeyAndNode);
-        errdefer self.allocator.destroy(key_and_node);
-        key_and_node.key = key;
-        key_and_node.node = .{};
-        self.key_queue.prepend(&key_and_node.node);
+        key_and_node.* = .{ .key = key, .node = .{} };
+        self.key_queue.append(&key_and_node.node);
     }
 
+    // drop a partially-buffered escape sequence without reporting anything
     pub fn clearScratch(self: *EscapeParser) void {
         self.esc_buffer.clearRetainingCapacity();
+        self.esc_overflowed = false;
     }
 
-    pub fn writeBytes(self: *EscapeParser, bytes: []const u8) !?inp.Key {
-        const text = std.unicode.Utf8View.init(bytes) catch return null;
+    // decode `bytes` and queue every key they yield, in arrival order. a
+    // sequence cut off at the end stays buffered until the rest arrives, so
+    // input may be fed in arbitrary chunks.
+    pub fn queueBytes(self: *EscapeParser, bytes: []const u8) !void {
+        const text = std.unicode.Utf8View.init(bytes) catch return;
         var iter = text.iterator();
-        var key_maybe: ?inp.Key = null;
         while (iter.nextCodepoint()) |codepoint| {
-            const next_bytes = iter.peek(1);
-            if (try self.writeCodepoint(codepoint, if (next_bytes.len == 1) next_bytes[0] else null)) |key| {
-                if (key_maybe == null) {
-                    key_maybe = key;
-                } else {
-                    var key_and_node = try self.allocator.create(KeyAndNode);
-                    errdefer self.allocator.destroy(key_and_node);
-                    key_and_node.key = key;
-                    key_and_node.node = .{};
-                    self.key_queue.append(&key_and_node.node);
-                }
-            }
+            try self.writeCodepoint(codepoint);
         }
-        return key_maybe;
     }
 
-    fn writeCodepoint(self: *EscapeParser, codepoint: u21, next_byte_maybe: ?u8) !?inp.Key {
-        const esc_len = self.esc_buffer.items.len;
-
-        // sanity check
-        if (esc_len == self.esc_buffer.capacity) {
-            return error.EscCodeAtCapacity;
+    // report a held-back ESC as the escape key. an ESC is buffered rather than
+    // reported at once because it may open a CSI/SS3 sequence or an alt combo;
+    // a caller that knows nothing more is coming resolves it with this. a
+    // longer partial sequence is unaffected, since it may still complete.
+    pub fn flushEscape(self: *EscapeParser) !void {
+        if (self.esc_buffer.items.len == 1 and self.esc_buffer.items[0] == '\x1B') {
+            self.clearScratch();
+            try self.append(.escape);
         }
-        // we are in an esc sequence
-        else if (esc_len > 0) {
-            // esc sequences should be ascii-only
-            const byte: u8 = std.math.cast(u8, codepoint) orelse return null;
+    }
 
-            // the character after esc either opens a CSI/SS3 sequence or
-            // completes an alt combo
-            if (esc_len == 1) {
-                if (byte == '[' or byte == 'O') {
-                    self.esc_buffer.appendAssumeCapacity(byte);
-                    return null;
-                }
-                self.esc_buffer.clearRetainingCapacity();
-                return .{ .alt = byte };
-            }
+    // give up on the buffered sequence: a lone ESC was the escape key, and a
+    // longer fragment is unparseable and reports as a single unknown key.
+    fn abortSequence(self: *EscapeParser) !void {
+        const lone_esc = self.esc_buffer.items.len == 1;
+        self.clearScratch();
+        try self.append(if (lone_esc) .escape else .unknown);
+    }
 
-            // return key or add byte to esc sequence
-            switch (byte) {
-                // chars that terminate the sequence
-                0x40...0x7E => {
-                    const key: inp.Key = switch (byte) {
-                        'A' => .arrow_up,
-                        'B' => .arrow_down,
-                        'C' => .arrow_right,
-                        'D' => .arrow_left,
-                        'F' => .end,
-                        'H' => .home,
-                        // shift+tab — xterm-style "CSI Z"
-                        'Z' => .back_tab,
-                        // F1–F4 — SS3-style "ESC O P" through "ESC O S"
-                        // (also the terminator of modified CSI forms
-                        // like "CSI 1;2P", whose modifier we ignore)
-                        'P' => .{ .f = 1 },
-                        'Q' => .{ .f = 2 },
-                        'R' => .{ .f = 3 },
-                        'S' => .{ .f = 4 },
-                        'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
-                        '~' => blk: {
-                            var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
-                            const code = codes.first();
-                            break :blk if (std.mem.eql(u8, code, "1"))
-                                .home
-                            else if (std.mem.eql(u8, code, "2"))
-                                .insert
-                            else if (std.mem.eql(u8, code, "3"))
-                                .delete
-                            else if (std.mem.eql(u8, code, "4"))
-                                .end
-                            else if (std.mem.eql(u8, code, "5"))
-                                .page_up
-                            else if (std.mem.eql(u8, code, "6"))
-                                .page_down
-                                // F1–F12 — the historical code sequence
-                                // has gaps at 16 and 22
-                            else if (std.mem.eql(u8, code, "11"))
-                                inp.Key{ .f = 1 }
-                            else if (std.mem.eql(u8, code, "12"))
-                                inp.Key{ .f = 2 }
-                            else if (std.mem.eql(u8, code, "13"))
-                                inp.Key{ .f = 3 }
-                            else if (std.mem.eql(u8, code, "14"))
-                                inp.Key{ .f = 4 }
-                            else if (std.mem.eql(u8, code, "15"))
-                                inp.Key{ .f = 5 }
-                            else if (std.mem.eql(u8, code, "17"))
-                                inp.Key{ .f = 6 }
-                            else if (std.mem.eql(u8, code, "18"))
-                                inp.Key{ .f = 7 }
-                            else if (std.mem.eql(u8, code, "19"))
-                                inp.Key{ .f = 8 }
-                            else if (std.mem.eql(u8, code, "20"))
-                                inp.Key{ .f = 9 }
-                            else if (std.mem.eql(u8, code, "21"))
-                                inp.Key{ .f = 10 }
-                            else if (std.mem.eql(u8, code, "23"))
-                                inp.Key{ .f = 11 }
-                            else if (std.mem.eql(u8, code, "24"))
-                                inp.Key{ .f = 12 }
-                            else
-                                .unknown;
-                        },
-                        else => .unknown,
-                    };
-                    self.esc_buffer.clearRetainingCapacity();
-                    return key;
-                },
-                // add all other chars to the esc sequence
-                else => self.esc_buffer.appendAssumeCapacity(byte),
+    // decode a codepoint that isn't part of an escape sequence
+    fn plainKey(codepoint: u21) inp.Key {
+        if (codepoint == 8 or codepoint == 127) return .backspace;
+        if (codepoint == 13 or codepoint == 10) return .enter;
+        if (codepoint == 9) return .tab;
+        // remaining C0 control chars are ctrl+letter (0x01 == ctrl+a)
+        if (codepoint >= 0x01 and codepoint <= 0x1A) return .{ .ctrl = @intCast(codepoint - 0x01 + 'a') };
+        return .{ .codepoint = codepoint };
+    }
+
+    fn writeCodepoint(self: *EscapeParser, codepoint: u21) !void {
+        // not in an esc sequence
+        if (self.esc_buffer.items.len == 0) {
+            // hold the ESC back: the next byte decides whether it opens a
+            // sequence, completes an alt combo, or was the escape key
+            if (codepoint == '\x1B') {
+                self.esc_buffer.appendAssumeCapacity('\x1B');
+                return;
             }
+            return self.append(plainKey(codepoint));
         }
-        // we are not in an esc sequence
-        else {
-            if ('\x1B' == codepoint) {
-                if (next_byte_maybe) |next_byte| {
-                    // `[` opens a CSI sequence (arrows, page keys, mouse,
-                    // etc.). `O` opens an SS3 sequence — most modern
-                    // terminals use it for F1–F4 (ESC O P/Q/R/S) and for
-                    // arrow keys in application-keypad mode. any other
-                    // printable byte is an alt combo (alt+x sends ESC x).
-                    // either way, we buffer the ESC and dispatch on the
-                    // next byte.
-                    if (next_byte >= 0x20 and next_byte < 0x7F) {
-                        self.esc_buffer.appendAssumeCapacity('\x1B');
-                        return null;
-                    }
-                }
-                // bare ESC — the user pressed the Escape key itself.
-                return .escape;
+
+        // esc sequences are ascii-only, so a multi-byte codepoint ends the
+        // buffered one and stands on its own
+        const byte: u8 = std.math.cast(u8, codepoint) orelse {
+            try self.abortSequence();
+            return self.append(plainKey(codepoint));
+        };
+
+        // the byte after ESC either opens a CSI/SS3 sequence or completes an
+        // alt combo; anything non-printable means the ESC was the escape key
+        if (self.esc_buffer.items.len == 1) {
+            if (byte == '[' or byte == 'O') {
+                self.esc_buffer.appendAssumeCapacity(byte);
+                return;
             }
-            if (codepoint == 8 or codepoint == 127) return .backspace;
-            if (codepoint == 13 or codepoint == 10) return .enter;
-            if (codepoint == 9) return .tab;
-            // remaining C0 control chars are ctrl+letter (0x01 == ctrl+a)
-            if (codepoint >= 0x01 and codepoint <= 0x1A) return .{ .ctrl = @intCast(codepoint - 0x01 + 'a') };
-            return .{ .codepoint = codepoint };
+            self.clearScratch();
+            if (byte >= 0x20 and byte < 0x7F) return self.append(.{ .alt = byte });
+            try self.append(.escape);
+            // a second ESC opens the next sequence rather than decoding here
+            if (byte == '\x1B') {
+                self.esc_buffer.appendAssumeCapacity('\x1B');
+                return;
+            }
+            return self.append(plainKey(codepoint));
         }
-        return null;
+
+        switch (byte) {
+            // chars that terminate the sequence
+            0x40...0x7E => {
+                const key: inp.Key = if (self.esc_overflowed) .unknown else switch (byte) {
+                    'A' => .arrow_up,
+                    'B' => .arrow_down,
+                    'C' => .arrow_right,
+                    'D' => .arrow_left,
+                    'F' => .end,
+                    'H' => .home,
+                    // shift+tab — xterm-style "CSI Z"
+                    'Z' => .back_tab,
+                    // F1–F4 — SS3-style "ESC O P" through "ESC O S"
+                    // (also the terminator of modified CSI forms
+                    // like "CSI 1;2P", whose modifier we ignore)
+                    'P' => .{ .f = 1 },
+                    'Q' => .{ .f = 2 },
+                    'R' => .{ .f = 3 },
+                    'S' => .{ .f = 4 },
+                    'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
+                    '~' => blk: {
+                        var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
+                        const code = codes.first();
+                        break :blk if (std.mem.eql(u8, code, "1"))
+                            .home
+                        else if (std.mem.eql(u8, code, "2"))
+                            .insert
+                        else if (std.mem.eql(u8, code, "3"))
+                            .delete
+                        else if (std.mem.eql(u8, code, "4"))
+                            .end
+                        else if (std.mem.eql(u8, code, "5"))
+                            .page_up
+                        else if (std.mem.eql(u8, code, "6"))
+                            .page_down
+                            // F1–F12 — the historical code sequence
+                            // has gaps at 16 and 22
+                        else if (std.mem.eql(u8, code, "11"))
+                            inp.Key{ .f = 1 }
+                        else if (std.mem.eql(u8, code, "12"))
+                            inp.Key{ .f = 2 }
+                        else if (std.mem.eql(u8, code, "13"))
+                            inp.Key{ .f = 3 }
+                        else if (std.mem.eql(u8, code, "14"))
+                            inp.Key{ .f = 4 }
+                        else if (std.mem.eql(u8, code, "15"))
+                            inp.Key{ .f = 5 }
+                        else if (std.mem.eql(u8, code, "17"))
+                            inp.Key{ .f = 6 }
+                        else if (std.mem.eql(u8, code, "18"))
+                            inp.Key{ .f = 7 }
+                        else if (std.mem.eql(u8, code, "19"))
+                            inp.Key{ .f = 8 }
+                        else if (std.mem.eql(u8, code, "20"))
+                            inp.Key{ .f = 9 }
+                        else if (std.mem.eql(u8, code, "21"))
+                            inp.Key{ .f = 10 }
+                        else if (std.mem.eql(u8, code, "23"))
+                            inp.Key{ .f = 11 }
+                        else if (std.mem.eql(u8, code, "24"))
+                            inp.Key{ .f = 12 }
+                        else
+                            .unknown;
+                    },
+                    else => .unknown,
+                };
+                self.clearScratch();
+                return self.append(key);
+            },
+            // a sequence too long to buffer can't be parsed, but its bytes
+            // must still be consumed so the tail doesn't leak out as keys
+            else => if (self.esc_buffer.items.len == self.esc_buffer.capacity) {
+                self.esc_overflowed = true;
+            } else {
+                self.esc_buffer.appendAssumeCapacity(byte);
+            },
+        }
     }
 };
 

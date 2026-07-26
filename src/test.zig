@@ -396,9 +396,81 @@ test "StreamTerminal parses alt+letter" {
     try terminal.writeBytes("\x1Bx");
     try std.testing.expectEqual(@as(?inp.Key, .{ .alt = 'x' }), terminal.popKey());
 
-    // a bare ESC is still the escape key
+    // a lone ESC is held back — the next frame may carry the rest of a
+    // sequence — until the driver flushes it
     try terminal.writeBytes("\x1B");
+    try std.testing.expectEqual(@as(?inp.Key, null), terminal.popKey());
+    try terminal.flushEscape();
     try std.testing.expectEqual(@as(?inp.Key, .escape), terminal.popKey());
+}
+
+test "StreamTerminal keeps keys in arrival order across feeds" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    try terminal.writeBytes("ab");
+    try terminal.writeBytes("cd");
+
+    var got: [4]u8 = undefined;
+    for (&got) |*g| g.* = @intCast(terminal.popKey().?.codepoint);
+    try std.testing.expectEqualStrings("abcd", &got);
+}
+
+test "StreamTerminal resolves a sequence split across feeds" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    try terminal.writeBytes("\x1B");
+    try terminal.writeBytes("[A");
+    try std.testing.expectEqual(@as(?inp.Key, .arrow_up), terminal.popKey());
+    try std.testing.expectEqual(@as(?inp.Key, null), terminal.popKey());
+
+    // split mid-parameter too
+    try terminal.writeBytes("\x1B[1");
+    try terminal.writeBytes("5~");
+    try std.testing.expectEqual(@as(?inp.Key, .{ .f = 5 }), terminal.popKey());
+}
+
+test "StreamTerminal survives an over-long escape sequence" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    // a device attributes reply longer than the parser's scratch buffer: it
+    // reports as one unknown key, tail and all, and input keeps working
+    try terminal.writeBytes("\x1B[?" ++ ("1;" ** 100) ++ "2c");
+    try std.testing.expectEqual(@as(?inp.Key, .unknown), terminal.popKey());
+    try std.testing.expectEqual(@as(?inp.Key, null), terminal.popKey());
+
+    try terminal.writeBytes("\x1B[Aq");
+    try std.testing.expectEqual(@as(?inp.Key, .arrow_up), terminal.popKey());
+    try std.testing.expectEqual(@as(u21, 'q'), terminal.popKey().?.codepoint);
+}
+
+test "StreamTerminal reports repeated escape presses" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    // ESC followed by a control byte can't be an alt combo, so the first ESC
+    // resolves on its own and the second opens the next sequence
+    try terminal.writeBytes("\x1B\x1B[A");
+    try std.testing.expectEqual(@as(?inp.Key, .escape), terminal.popKey());
+    try std.testing.expectEqual(@as(?inp.Key, .arrow_up), terminal.popKey());
 }
 
 test "StreamTerminal parses function keys and insert" {

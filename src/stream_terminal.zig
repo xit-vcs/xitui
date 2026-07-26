@@ -71,17 +71,19 @@ pub const StreamTerminal = struct {
     }
 
     // push raw user-input bytes through the escape parser. resulting keys
-    // accumulate in the parser's queue, drained by repeated popKey calls.
-    // unlike the tty backend we don't clear scratch between calls — a
-    // partial escape sequence split across two data frames should still
-    // resolve once the rest arrives.
+    // accumulate in the parser's queue, drained by repeated popKey calls. an
+    // escape sequence split across two data frames resolves once the rest
+    // arrives, so bytes may be fed in arbitrary chunks.
     pub fn writeBytes(self: *StreamTerminal, bytes: []const u8) !void {
-        // EscapeParser.writeBytes returns the first key inline and queues
-        // the rest, but we want every key in the queue so popKey can drain
-        // them in arrival order. push the inline return back to the head.
-        if (try self.parser.writeBytes(bytes)) |first| {
-            try self.parser.prepend(first);
-        }
+        try self.parser.queueBytes(bytes);
+    }
+
+    // report a held-back ESC as the escape key. a lone ESC is ambiguous until
+    // the next byte arrives, since it may open a sequence carried in the next
+    // frame, so a driver should call this once input has gone idle (~25 ms is
+    // the convention) or pressing Escape waits on the next keystroke.
+    pub fn flushEscape(self: *StreamTerminal) !void {
+        try self.parser.flushEscape();
     }
 
     // pop the next decoded input event: a queued key, a pending resize, or

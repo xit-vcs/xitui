@@ -18,10 +18,10 @@ pub const Key = union(enum) {
     // function keys, 1 through 12
     f: u4,
     // alt+key, stored as the printable byte that followed the ESC prefix.
-    // alt+shift+letter arrives as the uppercase letter. a bare ESC press
-    // and an ESC-prefixed byte split across two reads are inherently
-    // ambiguous; the parser only reports alt when both bytes arrive in
-    // the same read, and otherwise falls back to escape + codepoint.
+    // alt+shift+letter arrives as the uppercase letter. a bare ESC press and
+    // an ESC-prefixed byte are inherently ambiguous, so the parser holds an
+    // ESC back until the next byte decides; escape is reported only once the
+    // caller flushes (see EscapeParser.flushEscape).
     alt: u8,
     // ctrl+letter, stored as the lowercase letter ('a'...'z'). ctrl+h,
     // ctrl+i, ctrl+j, and ctrl+m are indistinguishable from backspace,
