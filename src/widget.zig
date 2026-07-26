@@ -657,11 +657,11 @@ pub fn TextBox(comptime Widget: type) type {
                                         line_w += w;
                                     }
 
+                                    // wrapping is lazy (a full line breaks
+                                    // only when another char needs room), so
+                                    // a "\n" can't flush an emptied line
                                     if (std.mem.eql(u8, utf8.peek(1), "")) {
                                         try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                    } else if (line_w >= inner_width) {
-                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                        line_w = 0;
                                     }
                                 }
                             },
@@ -943,7 +943,10 @@ pub fn TextInput(comptime Widget: type) type {
                     continue;
                 }
                 const w = self.contentCellWidth(i);
-                if (col > 0 and col + w > wrap_width) {
+                // an overflowing space stays put as trailing whitespace
+                // instead of opening a row of its own; the next word breaks
+                const is_space = std.mem.eql(u8, cp, " ");
+                if (!is_space and col > 0 and col + w > wrap_width) {
                     // break after the row's last space if it has one,
                     // otherwise char-wrap
                     const start = if (last_space) |space| space + 1 else i;
@@ -951,7 +954,7 @@ pub fn TextInput(comptime Widget: type) type {
                     col = self.columnsBetween(start, i);
                     last_space = null;
                 }
-                if (std.mem.eql(u8, cp, " ")) last_space = i;
+                if (is_space) last_space = i;
                 col += w;
             }
         }
