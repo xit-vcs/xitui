@@ -618,11 +618,11 @@ pub const Terminal = struct {
                 };
             },
             else => {
-                try std.posix.tcsetattr(self.core.tty.handle, .DRAIN, self.core.raw);
                 var win_size = std.mem.zeroes(std.posix.winsize);
-                const err = std.os.linux.ioctl(self.core.tty.handle, std.posix.T.IOCGWINSZ, @intFromPtr(&win_size));
-                if (std.posix.errno(err) != .SUCCESS) {
-                    return std.posix.unexpectedErrno(@enumFromInt(err));
+                const rc = std.posix.system.ioctl(self.core.tty.handle, std.posix.T.IOCGWINSZ, @intFromPtr(&win_size));
+                switch (std.posix.errno(rc)) {
+                    .SUCCESS => {},
+                    else => |err| return std.posix.unexpectedErrno(err),
                 }
                 return .{
                     .width = win_size.col,
