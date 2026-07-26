@@ -93,6 +93,19 @@ pub const BorderStyle = enum {
     double_dashed,
 };
 
+// overlay a label on the border row at `y`, truncating at the far corner.
+fn drawLabel(grid: *Grid, y: usize, label: []const u8) !void {
+    if (label.len == 0 or grid.size.width <= 2) return;
+    var label_iter = (try std.unicode.Utf8View.init(label)).iterator();
+    var x: usize = 1;
+    while (label_iter.nextCodepointSlice()) |ch| {
+        const w = wth.cellWidth(ch);
+        if (x + w > grid.size.width - 1) break;
+        try grid.setRune(x, y, ch);
+        x += w;
+    }
+}
+
 pub fn Box(comptime Widget: type) type {
     return struct {
         focus: *Focus,
@@ -126,6 +139,9 @@ pub fn Box(comptime Widget: type) type {
             border_style: ?BorderStyle,
             rounded_corners: bool = false,
             direction: Direction,
+            // optional labels rendered over the top and bottom borders.
+            label: []const u8 = "",
+            bottom_label: []const u8 = "",
         };
 
         pub fn init(allocator: std.mem.Allocator, options: Options) !Box(Widget) {
@@ -474,6 +490,9 @@ pub fn Box(comptime Widget: type) type {
                 try grid.setRune(grid.size.width - 1, 0, top_right_corner);
                 try grid.setRune(0, grid.size.height - 1, bottom_left_corner);
                 try grid.setRune(grid.size.width - 1, grid.size.height - 1, bottom_right_corner);
+
+                try drawLabel(&grid, 0, self.options.label);
+                try drawLabel(&grid, grid.size.height - 1, self.options.bottom_label);
             }
 
             // set grid
@@ -541,6 +560,9 @@ pub fn TextBox(comptime Widget: type) type {
             border_style: ?BorderStyle,
             rounded_corners: bool = false,
             wrap_kind: WrapKind,
+            // optional labels rendered over the top and bottom borders.
+            label: []const u8 = "",
+            bottom_label: []const u8 = "",
         };
 
         pub fn init(
@@ -571,7 +593,7 @@ pub fn TextBox(comptime Widget: type) type {
                 try lines.append(allocator, try line.toOwnedSlice(allocator));
             }
 
-            var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert });
+            var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert, .label = options.label, .bottom_label = options.bottom_label });
             errdefer box.deinit(allocator);
             box.getFocus().kind = .text_box;
             for (lines.items) |line| {
@@ -706,6 +728,8 @@ pub fn TextBox(comptime Widget: type) type {
                 .hidden, .double, .double_dashed => base,
             } else null;
             self.box.options.rounded_corners = self.options.rounded_corners;
+            self.box.options.label = self.options.label;
+            self.box.options.bottom_label = self.options.bottom_label;
             try self.box.build(allocator, constraint, root_focus);
         }
 
@@ -796,9 +820,10 @@ pub fn TextInput(comptime Widget: type) type {
             // when true, every character is rendered as a bullet so the
             // actual content isn't visible on screen
             password: bool = false,
-            // optional label rendered over the top border (e.g. "username").
-            // when empty, the border is drawn unchanged.
+            // optional labels rendered over the top and bottom borders. when
+            // empty, that border is drawn unchanged.
             label: []const u8 = "",
+            bottom_label: []const u8 = "",
             // optional form-field name; the web renderer emits it as the
             // HTML `name` attribute so the value is submitted with that key.
             name: []const u8 = "",
@@ -1049,7 +1074,7 @@ pub fn TextInput(comptime Widget: type) type {
 
             // border
             if (effective_border) |border_style| {
-                try drawBorder(&grid, border_style, self.options.rounded_corners, self.options.label);
+                try drawBorder(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
             }
 
             self.grid = grid;
@@ -1163,13 +1188,13 @@ pub fn TextInput(comptime Widget: type) type {
             }
 
             if (effective_border) |border_style| {
-                try drawBorder(&grid, border_style, self.options.rounded_corners, self.options.label);
+                try drawBorder(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
             }
 
             self.grid = grid;
         }
 
-        fn drawBorder(grid: *Grid, border_style: BorderStyle, rounded_corners: bool, label: []const u8) !void {
+        fn drawBorder(grid: *Grid, border_style: BorderStyle, rounded_corners: bool, label: []const u8, bottom_label: []const u8) !void {
             const horiz_line = switch (border_style) {
                 .hidden => " ",
                 .single, .single_dashed => "─",
@@ -1215,17 +1240,8 @@ pub fn TextInput(comptime Widget: type) type {
             try grid.setRune(0, grid.size.height - 1, bottom_left);
             try grid.setRune(grid.size.width - 1, grid.size.height - 1, bottom_right);
 
-            // overlay the label on the top border, truncating to fit
-            if (label.len > 0 and grid.size.width > 2) {
-                var label_iter = (try std.unicode.Utf8View.init(label)).iterator();
-                var x: usize = 1;
-                while (label_iter.nextCodepointSlice()) |ch| {
-                    const w = wth.cellWidth(ch);
-                    if (x + w > grid.size.width - 1) break;
-                    try grid.setRune(x, 0, ch);
-                    x += w;
-                }
-            }
+            try drawLabel(grid, 0, label);
+            try drawLabel(grid, grid.size.height - 1, bottom_label);
         }
 
         pub fn input(self: *TextInput(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
