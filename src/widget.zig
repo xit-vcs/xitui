@@ -151,6 +151,8 @@ pub fn Box(comptime Widget: type) type {
             // optional labels rendered over the top and bottom borders.
             label: []const u8 = "",
             bottom_label: []const u8 = "",
+            // force each child to fill the cross axis when it's bounded.
+            stretch: bool = false,
         };
 
         pub fn init(allocator: std.mem.Allocator, options: Options) !Box(Widget) {
@@ -377,6 +379,17 @@ pub fn Box(comptime Widget: type) type {
                 // more room available in the parent.
                 const child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
                 const child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
+
+                if (self.options.stretch) {
+                    switch (self.options.direction) {
+                        .vert => if (child_max_width) |max_w| {
+                            if (max_w > (child_min_size.width orelse 0)) child_min_size.width = max_w;
+                        },
+                        .horiz => if (child_max_height) |max_h| {
+                            if (max_h > (child_min_size.height orelse 0)) child_min_size.height = max_h;
+                        },
+                    }
+                }
 
                 try child.widget.build(allocator, .{
                     .min_size = child_min_size,
