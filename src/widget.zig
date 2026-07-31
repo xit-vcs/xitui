@@ -4,6 +4,9 @@ const Focus = @import("./focus.zig").Focus;
 const layout = @import("./layout.zig");
 const inp = @import("./input.zig");
 const wth = @import("./width.zig");
+const draw = @import("./draw.zig");
+
+pub const BorderStyle = draw.BorderStyle;
 
 pub fn Text(comptime Widget: type) type {
     return struct {
@@ -21,10 +24,7 @@ pub fn Text(comptime Widget: type) type {
 
         pub fn deinit(self: *Text(Widget), allocator: std.mem.Allocator) void {
             self.focus.destroy(allocator);
-            if (self.grid) |*grid| {
-                grid.deinit();
-                self.grid = null;
-            }
+            self.clearGrid();
         }
 
         pub fn build(self: *Text(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
@@ -39,13 +39,7 @@ pub fn Text(comptime Widget: type) type {
             }
             // measure in display columns, not codepoints: wide (e.g. CJK)
             // runes occupy two cells
-            var content_width: usize = 0;
-            {
-                var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
-                while (utf8.nextCodepointSlice()) |char| {
-                    content_width += wth.cellWidth(char);
-                }
-            }
+            const content_width = try wth.displayWidth(self.content);
             var grid = try Grid.init(allocator, .{ .width = @max(1, @min(content_width, constraint.max_size.width orelse content_width)), .height = 1 });
             errdefer grid.deinit();
             var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
@@ -85,36 +79,6 @@ pub fn Text(comptime Widget: type) type {
     };
 }
 
-pub const BorderStyle = enum {
-    hidden,
-    single,
-    double,
-    single_dashed,
-    double_dashed,
-};
-
-// the display columns a label occupies, which a bordered widget needs between
-// its corners to show the whole thing.
-fn labelWidth(label: []const u8) !usize {
-    var width: usize = 0;
-    var label_iter = (try std.unicode.Utf8View.init(label)).iterator();
-    while (label_iter.nextCodepointSlice()) |ch| width += wth.cellWidth(ch);
-    return width;
-}
-
-// overlay a label on the border row at `y`, truncating at the far corner.
-fn drawLabel(grid: *Grid, y: usize, label: []const u8) !void {
-    if (label.len == 0 or grid.size.width <= 2) return;
-    var label_iter = (try std.unicode.Utf8View.init(label)).iterator();
-    var x: usize = 1;
-    while (label_iter.nextCodepointSlice()) |ch| {
-        const w = wth.cellWidth(ch);
-        if (x + w > grid.size.width - 1) break;
-        try grid.setRune(x, y, ch);
-        x += w;
-    }
-}
-
 pub fn Box(comptime Widget: type) type {
     return struct {
         focus: *Focus,
@@ -145,7 +109,7 @@ pub fn Box(comptime Widget: type) type {
         };
 
         pub const Options = struct {
-            border_style: ?BorderStyle,
+            border_style: ?draw.BorderStyle,
             rounded_corners: bool = false,
             direction: Direction,
             // optional labels rendered over the top and bottom borders.
@@ -166,10 +130,7 @@ pub fn Box(comptime Widget: type) type {
 
         pub fn deinit(self: *Box(Widget), allocator: std.mem.Allocator) void {
             self.focus.destroy(allocator);
-            if (self.grid) |*grid| {
-                grid.deinit();
-                self.grid = null;
-            }
+            self.clearGrid();
             for (self.children.values()) |*child| {
                 child.widget.deinit(allocator);
             }
@@ -419,7 +380,7 @@ pub fn Box(comptime Widget: type) type {
 
             // widen for the labels, up to the width we're allowed
             if (border_size > 0) {
-                const label_min = @max(try labelWidth(self.options.label), try labelWidth(self.options.bottom_label));
+                const label_min = @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label));
                 if (label_min > 0) {
                     width = @max(width, label_min + border_size * 2);
                     if (constraint.max_size.width) |max_width| width = @min(width, max_width);
@@ -472,58 +433,8 @@ pub fn Box(comptime Widget: type) type {
                 },
             }
 
-            // border style
             if (self.options.border_style) |border_style| {
-                const horiz_line = switch (border_style) {
-                    .hidden => " ",
-                    .single, .single_dashed => "─",
-                    .double, .double_dashed => "═",
-                };
-                const vert_line = switch (border_style) {
-                    .hidden => " ",
-                    .single, .single_dashed => "│",
-                    .double, .double_dashed => "║",
-                };
-                const top_left_corner = switch (border_style) {
-                    .hidden => " ",
-                    .single, .single_dashed => if (self.options.rounded_corners) "╭" else "┌",
-                    .double, .double_dashed => if (self.options.rounded_corners) "╭" else "╔",
-                };
-                const top_right_corner = switch (border_style) {
-                    .hidden => " ",
-                    .single, .single_dashed => if (self.options.rounded_corners) "╮" else "┐",
-                    .double, .double_dashed => if (self.options.rounded_corners) "╮" else "╗",
-                };
-                const bottom_left_corner = switch (border_style) {
-                    .hidden => " ",
-                    .single, .single_dashed => if (self.options.rounded_corners) "╰" else "└",
-                    .double, .double_dashed => if (self.options.rounded_corners) "╰" else "╚",
-                };
-                const bottom_right_corner = switch (border_style) {
-                    .hidden => " ",
-                    .single, .single_dashed => if (self.options.rounded_corners) "╯" else "┘",
-                    .double, .double_dashed => if (self.options.rounded_corners) "╯" else "╝",
-                };
-                // top and bottom border
-                for (1..grid.size.width - 1) |x| {
-                    if ((border_style == .single_dashed or border_style == .double_dashed) and x % 2 == 1) continue;
-                    try grid.setRune(x, 0, horiz_line);
-                    try grid.setRune(x, grid.size.height - 1, horiz_line);
-                }
-                // left and right border
-                for (1..grid.size.height - 1) |y| {
-                    if ((border_style == .single_dashed or border_style == .double_dashed) and y % 2 == 1) continue;
-                    try grid.setRune(0, y, vert_line);
-                    try grid.setRune(grid.size.width - 1, y, vert_line);
-                }
-                // corners
-                try grid.setRune(0, 0, top_left_corner);
-                try grid.setRune(grid.size.width - 1, 0, top_right_corner);
-                try grid.setRune(0, grid.size.height - 1, bottom_left_corner);
-                try grid.setRune(grid.size.width - 1, grid.size.height - 1, bottom_right_corner);
-
-                try drawLabel(&grid, 0, self.options.label);
-                try drawLabel(&grid, grid.size.height - 1, self.options.bottom_label);
+                try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
             }
 
             // set grid
@@ -588,7 +499,7 @@ pub fn TextBox(comptime Widget: type) type {
         lines: std.ArrayList([]const u8),
 
         pub const Options = struct {
-            border_style: ?BorderStyle,
+            border_style: ?draw.BorderStyle,
             rounded_corners: bool = false,
             wrap_kind: WrapKind,
             // optional labels rendered over the top and bottom borders.
@@ -627,11 +538,7 @@ pub fn TextBox(comptime Widget: type) type {
             var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert, .label = options.label, .bottom_label = options.bottom_label });
             errdefer box.deinit(allocator);
             box.getFocus().kind = .text_box;
-            for (lines.items) |line| {
-                var text = try Text(Widget).init(allocator, line);
-                errdefer text.deinit(allocator);
-                try box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
-            }
+            try resetTextChildren(allocator, &box, lines.items);
 
             return .{
                 .box = box,
@@ -739,13 +646,7 @@ pub fn TextBox(comptime Widget: type) type {
                         }
 
                         // refresh the inner box's children in-place
-                        for (self.box.children.values()) |*child| child.widget.deinit(allocator);
-                        self.box.children.clearAndFree(allocator);
-                        for (self.lines.items) |line| {
-                            var text = try Text(Widget).init(allocator, line);
-                            errdefer text.deinit(allocator);
-                            try self.box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
-                        }
+                        try resetTextChildren(allocator, &self.box, self.lines.items);
                     }
                 }
             }
@@ -778,6 +679,17 @@ pub fn TextBox(comptime Widget: type) type {
 
         pub fn getFocus(self: *TextBox(Widget)) *Focus {
             return self.box.getFocus();
+        }
+
+        // replace the inner box's children with one Text row per line
+        fn resetTextChildren(allocator: std.mem.Allocator, box: *Box(Widget), lines: []const []const u8) !void {
+            for (box.children.values()) |*child| child.widget.deinit(allocator);
+            box.children.clearAndFree(allocator);
+            for (lines) |line| {
+                var text = try Text(Widget).init(allocator, line);
+                errdefer text.deinit(allocator);
+                try box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
+            }
         }
 
         fn flushPendingWord(
@@ -843,7 +755,7 @@ pub fn TextInput(comptime Widget: type) type {
         last_wrap_width: ?usize,
 
         pub const Options = struct {
-            border_style: ?BorderStyle = .single_dashed,
+            border_style: ?draw.BorderStyle = .single_dashed,
             rounded_corners: bool = false,
             // visible width in codepoints, excluding the border (null = fill
             // the available width)
@@ -893,10 +805,7 @@ pub fn TextInput(comptime Widget: type) type {
 
         pub fn deinit(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
             self.focus.destroy(allocator);
-            if (self.grid) |*grid| {
-                grid.deinit();
-                self.grid = null;
-            }
+            self.clearGrid();
             for (self.content.items) |cp| allocator.free(cp);
             self.content.deinit(allocator);
             self.row_starts.deinit(allocator);
@@ -1027,7 +936,7 @@ pub fn TextInput(comptime Widget: type) type {
         pub fn build(self: *TextInput(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
 
-            const effective_border: ?BorderStyle = if (self.options.border_style) |base| switch (base) {
+            const effective_border: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
                 .hidden => .hidden,
                 else => if (root_focus.grandchild_id == self.focus.id) .double_dashed else .single_dashed,
             } else null;
@@ -1042,7 +951,7 @@ pub fn TextInput(comptime Widget: type) type {
                 const visible_width = self.options.visible_width orelse break :blk constraint.max_size.width orelse return;
                 // widen for the labels so they stay visible between the corners
                 const label_min = if (border_size > 0)
-                    @max(try labelWidth(self.options.label), try labelWidth(self.options.bottom_label))
+                    @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label))
                 else
                     0;
                 const desired_width = @max(visible_width, label_min) + border_size * 2;
@@ -1114,7 +1023,7 @@ pub fn TextInput(comptime Widget: type) type {
 
             // border
             if (effective_border) |border_style| {
-                try drawBorder(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+                try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
             }
 
             self.grid = grid;
@@ -1128,7 +1037,7 @@ pub fn TextInput(comptime Widget: type) type {
             return @min(wanted, avail_rows orelse wanted);
         }
 
-        fn buildMultiline(self: *TextInput(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus, effective_border: ?BorderStyle, width: usize, inner_width: usize) !void {
+        fn buildMultiline(self: *TextInput(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus, effective_border: ?draw.BorderStyle, width: usize, inner_width: usize) !void {
             const border_size: usize = if (effective_border) |_| 1 else 0;
 
             // rows the constraint allows; null = unbounded. A bounded height
@@ -1206,82 +1115,15 @@ pub fn TextInput(comptime Widget: type) type {
                 }
 
                 if (bar == 1) {
-                    const track_len = vp_h;
-                    const track_len_f: f64 = @floatFromInt(track_len);
-                    const rows_f: f64 = @floatFromInt(rows);
-                    const viewport_f: f64 = @floatFromInt(vp_h);
-                    var thumb_len: usize = @intFromFloat(@round(track_len_f * viewport_f / rows_f));
-                    thumb_len = @max(1, thumb_len);
-                    thumb_len = @min(thumb_len, track_len);
-                    const max_start = track_len - thumb_len;
-                    const max_offset = rows - vp_h;
-                    const thumb_start: usize = if (max_offset == 0) 0 else blk: {
-                        const max_start_f: f64 = @floatFromInt(max_start);
-                        const offset_f: f64 = @floatFromInt(self.row_offset);
-                        const max_offset_f: f64 = @floatFromInt(max_offset);
-                        break :blk @intFromFloat(@round(max_start_f * offset_f / max_offset_f));
-                    };
-                    for (0..track_len) |view_row| {
-                        try grid.setRune(border_size + inner_width - 1, border_size + view_row, if (view_row >= thumb_start and view_row < thumb_start + thumb_len) "█" else "░");
-                    }
+                    try draw.scrollBarVert(&grid, border_size + inner_width - 1, border_size, vp_h, rows, vp_h, @intCast(self.row_offset));
                 }
             }
 
             if (effective_border) |border_style| {
-                try drawBorder(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+                try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
             }
 
             self.grid = grid;
-        }
-
-        fn drawBorder(grid: *Grid, border_style: BorderStyle, rounded_corners: bool, label: []const u8, bottom_label: []const u8) !void {
-            const horiz_line = switch (border_style) {
-                .hidden => " ",
-                .single, .single_dashed => "─",
-                .double, .double_dashed => "═",
-            };
-            const vert_line = switch (border_style) {
-                .hidden => " ",
-                .single, .single_dashed => "│",
-                .double, .double_dashed => "║",
-            };
-            const top_left = switch (border_style) {
-                .hidden => " ",
-                .single, .single_dashed => if (rounded_corners) "╭" else "┌",
-                .double, .double_dashed => if (rounded_corners) "╭" else "╔",
-            };
-            const top_right = switch (border_style) {
-                .hidden => " ",
-                .single, .single_dashed => if (rounded_corners) "╮" else "┐",
-                .double, .double_dashed => if (rounded_corners) "╮" else "╗",
-            };
-            const bottom_left = switch (border_style) {
-                .hidden => " ",
-                .single, .single_dashed => if (rounded_corners) "╰" else "└",
-                .double, .double_dashed => if (rounded_corners) "╰" else "╚",
-            };
-            const bottom_right = switch (border_style) {
-                .hidden => " ",
-                .single, .single_dashed => if (rounded_corners) "╯" else "┘",
-                .double, .double_dashed => if (rounded_corners) "╯" else "╝",
-            };
-            for (1..grid.size.width - 1) |x| {
-                if ((border_style == .single_dashed or border_style == .double_dashed) and x % 2 == 1) continue;
-                try grid.setRune(x, 0, horiz_line);
-                try grid.setRune(x, grid.size.height - 1, horiz_line);
-            }
-            for (1..grid.size.height - 1) |y| {
-                if ((border_style == .single_dashed or border_style == .double_dashed) and y % 2 == 0) continue;
-                try grid.setRune(0, y, vert_line);
-                try grid.setRune(grid.size.width - 1, y, vert_line);
-            }
-            try grid.setRune(0, 0, top_left);
-            try grid.setRune(grid.size.width - 1, 0, top_right);
-            try grid.setRune(0, grid.size.height - 1, bottom_left);
-            try grid.setRune(grid.size.width - 1, grid.size.height - 1, bottom_right);
-
-            try drawLabel(grid, 0, label);
-            try drawLabel(grid, grid.size.height - 1, bottom_label);
         }
 
         pub fn input(self: *TextInput(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
@@ -1381,11 +1223,6 @@ pub fn Scroll(comptime Widget: type) type {
         bar_w: usize,
         bar_h: usize,
 
-        // the solid run that represents the visible portion of the content.
-        const thumb_rune = "█";
-        // the lighter run drawn behind the thumb for the rest of the bar.
-        const track_rune = "░";
-
         pub const Options = struct {
             direction: ScrollDirection = .vert,
             show_bar: bool = true,
@@ -1404,28 +1241,6 @@ pub fn Scroll(comptime Widget: type) type {
         // constraint, keeping at least one cell. a null (unbounded) size stays null.
         fn subReserve(size: ?usize, reserve: usize) ?usize {
             return if (size) |s| (if (s > reserve) s - reserve else 1) else null;
-        }
-
-        // figure out where the scroll bar thumb sits and how long it is. the thumb's
-        // length is the track length scaled by how much of the content is visible, and
-        // its position is the current scroll offset scaled into the leftover track. if
-        // everything fits, the thumb fills the whole track.
-        fn scrollBarThumb(track_len: usize, content_total: usize, viewport: usize, offset: isize) struct { start: usize, len: usize } {
-            if (track_len == 0 or content_total <= viewport) {
-                return .{ .start = 0, .len = track_len };
-            }
-            const tl: f64 = @floatFromInt(track_len);
-            const ct: f64 = @floatFromInt(content_total);
-            const vp: f64 = @floatFromInt(viewport);
-            var len: usize = @intFromFloat(@round(tl * vp / ct));
-            if (len < 1) len = 1;
-            if (len > track_len) len = track_len;
-            const max_start = track_len - len;
-            const off: f64 = @floatFromInt(@max(@as(isize, 0), offset));
-            const max_off = ct - vp;
-            var start: usize = @intFromFloat(@round(@as(f64, @floatFromInt(max_start)) * off / max_off));
-            if (start > max_start) start = max_start;
-            return .{ .start = start, .len = len };
         }
 
         // the constraint to lay the child out under, shrinking the bounded axis
@@ -1463,10 +1278,7 @@ pub fn Scroll(comptime Widget: type) type {
         }
 
         pub fn deinit(self: *Scroll(Widget), allocator: std.mem.Allocator) void {
-            if (self.grid) |*grid| {
-                grid.deinit();
-                self.grid = null;
-            }
+            self.clearGrid();
             self.child.deinit(allocator);
             allocator.destroy(self.child);
         }
@@ -1563,18 +1375,10 @@ pub fn Scroll(comptime Widget: type) type {
                     errdefer full.deinit();
                     try full.drawGrid(content, 0, 0);
                     if (reserve_w == 1) {
-                        const thumb = scrollBarThumb(content_h, child_grid.size.height, content_h, self.y);
-                        const bar_x = content_w;
-                        for (0..content_h) |row| {
-                            try full.setRune(bar_x, row, if (row >= thumb.start and row < thumb.start + thumb.len) thumb_rune else track_rune);
-                        }
+                        try draw.scrollBarVert(&full, content_w, 0, content_h, child_grid.size.height, content_h, self.y);
                     }
                     if (reserve_h == 1) {
-                        const thumb = scrollBarThumb(content_w, child_grid.size.width, content_w, self.x);
-                        const bar_y = content_h;
-                        for (0..content_w) |col| {
-                            try full.setRune(col, bar_y, if (col >= thumb.start and col < thumb.start + thumb.len) thumb_rune else track_rune);
-                        }
+                        try draw.scrollBarHoriz(&full, 0, content_h, content_w, child_grid.size.width, content_w, self.x);
                     }
                     self.grid = full;
                 }

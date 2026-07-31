@@ -1,3 +1,4 @@
+pub const draw = @import("./draw.zig");
 pub const focus = @import("./focus.zig");
 pub const grid = @import("./grid.zig");
 pub const input = @import("./input.zig");

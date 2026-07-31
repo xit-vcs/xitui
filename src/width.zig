@@ -216,9 +216,21 @@ pub fn cellWidth(rune: []const u8) u2 {
     return 1;
 }
 
+// total columns the string occupies when every codepoint gets its own cell,
+// summing cellWidth. this is how the widgets lay text out, so labels and
+// single-line content measure with this.
+pub fn displayWidth(s: []const u8) !usize {
+    var iter = (try std.unicode.Utf8View.init(s)).iterator();
+    var total: usize = 0;
+    while (iter.nextCodepointSlice()) |cp| {
+        total += cellWidth(cp);
+    }
+    return total;
+}
+
 // total columns the string occupies, summing runeWidth over its codepoints.
 // zero-width codepoints genuinely count 0 here; widgets that give every
-// codepoint its own cell should accumulate cellWidth instead.
+// codepoint its own cell should use displayWidth instead.
 pub fn strWidth(s: []const u8) !usize {
     var iter = (try std.unicode.Utf8View.init(s)).iterator();
     var total: usize = 0;
@@ -251,4 +263,7 @@ test "strWidth and cellWidth" {
     try std.testing.expectEqual(@as(u2, 1), cellWidth("a"));
     try std.testing.expectEqual(@as(u2, 2), cellWidth("中"));
     try std.testing.expectEqual(@as(u2, 1), cellWidth("\u{0301}")); // a lone mark still fills its cell
+    try std.testing.expectEqual(@as(usize, 7), try displayWidth("abc中文"));
+    // per-cell layout gives the combining mark a cell of its own
+    try std.testing.expectEqual(@as(usize, 2), try displayWidth("e\u{0301}"));
 }
