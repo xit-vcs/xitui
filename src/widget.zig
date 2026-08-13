@@ -245,6 +245,7 @@ pub fn Box(comptime Widget: type) type {
 
             for (sorted_children.keys(), 0..) |child_index, sorted_child_index| {
                 var child = &self.children.values()[child_index];
+                child.rect = null;
                 child.widget.clearGrid();
 
                 // a hidden child takes no space: leave its grid cleared so the
@@ -1243,6 +1244,13 @@ pub fn Scroll(comptime Widget: type) type {
             return if (size) |s| (if (s > reserve) s - reserve else 1) else null;
         }
 
+        fn clampOffsets(self: *Scroll(Widget), content: layout.Size, view_w: usize, view_h: usize) void {
+            const max_x: isize = if (content.width > view_w) @intCast(content.width - view_w) else 0;
+            const max_y: isize = if (content.height > view_h) @intCast(content.height - view_h) else 0;
+            self.x = std.math.clamp(self.x, 0, max_x);
+            self.y = std.math.clamp(self.y, 0, max_y);
+        }
+
         // the constraint to lay the child out under, shrinking the bounded axis
         // by the column/row each bar reserves so content never sits under it.
         fn childConstraint(direction: ScrollDirection, constraint: layout.Constraint, reserve_w: usize, reserve_h: usize) layout.Constraint {
@@ -1305,6 +1313,7 @@ pub fn Scroll(comptime Widget: type) type {
                     const avail_h = constraint.max_size.height orelse child_grid.size.height;
                     const content_w = @max(1, if (self.options.fill) avail_w else @min(child_grid.size.width, avail_w));
                     const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
+                    self.clampOffsets(child_grid.size, content_w, content_h);
                     self.grid = try Grid.initFromGrid(allocator, child_grid, .{ .width = content_w, .height = content_h }, 0, 0);
                     self.getFocus().scroll = .{
                         .content = child_grid,
@@ -1353,6 +1362,7 @@ pub fn Scroll(comptime Widget: type) type {
                 const avail_h = subReserve(constraint.max_size.height, reserve_h) orelse child_grid.size.height;
                 const content_w = @max(1, if (self.options.fill) avail_w else @min(child_grid.size.width, avail_w));
                 const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
+                self.clampOffsets(child_grid.size, content_w, content_h);
 
                 if (reserve_w == 0 and reserve_h == 0) {
                     self.grid = try Grid.initFromGrid(allocator, child_grid, .{
@@ -1462,10 +1472,7 @@ pub fn Scroll(comptime Widget: type) type {
             const content = self.child.getGrid() orelse return;
             const view_w = vp.size.width - self.bar_w;
             const view_h = vp.size.height - self.bar_h;
-            const max_y: isize = if (content.size.height > view_h) @intCast(content.size.height - view_h) else 0;
-            const max_x: isize = if (content.size.width > view_w) @intCast(content.size.width - view_w) else 0;
-            self.y = std.math.clamp(self.y, 0, max_y);
-            self.x = std.math.clamp(self.x, 0, max_x);
+            self.clampOffsets(content.size, view_w, view_h);
         }
 
         pub fn getFocus(self: *Scroll(Widget)) *Focus {
