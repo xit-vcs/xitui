@@ -40,6 +40,7 @@ pub const Mouse = struct {
     x: usize,
     y: usize,
     action: MouseAction,
+    ctrl: bool = false,
 };
 
 pub const MouseAction = union(enum) {

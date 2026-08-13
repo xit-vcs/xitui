@@ -340,6 +340,7 @@ pub const Core = switch (builtin.os.tag) {
                         if (raw_x < 0 or raw_y < 0) continue;
                         const x: usize = @intCast(raw_x);
                         const y: usize = @intCast(raw_y);
+                        const ctrl_pressed = mouse_event.dwControlKeyState & (0x0004 | 0x0008) != 0;
 
                         const MOUSE_MOVED: std.os.windows.DWORD = 0x0001;
                         const MOUSE_WHEELED: std.os.windows.DWORD = 0x0004;
@@ -352,6 +353,7 @@ pub const Core = switch (builtin.os.tag) {
                                 .x = x,
                                 .y = y,
                                 .action = .{ .scroll = if (delta > 0) .up else .down },
+                                .ctrl = ctrl_pressed,
                             } };
                         }
 
@@ -374,13 +376,13 @@ pub const Core = switch (builtin.os.tag) {
                         const press_button: ?inp.MouseButton =
                             if (pressed & FROM_LEFT_1ST != 0) .left else if (pressed & FROM_LEFT_2ND != 0) .middle else if (pressed & RIGHTMOST != 0) .right else null;
                         if (press_button) |b| {
-                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .press = b } } };
+                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .press = b }, .ctrl = ctrl_pressed } };
                         }
 
                         const release_button: ?inp.MouseButton =
                             if (released & FROM_LEFT_1ST != 0) .left else if (released & FROM_LEFT_2ND != 0) .middle else if (released & RIGHTMOST != 0) .right else null;
                         if (release_button) |b| {
-                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .release = b } } };
+                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .release = b }, .ctrl = ctrl_pressed } };
                         }
 
                         continue;
@@ -858,11 +860,12 @@ fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
 
     const x: usize = if (cx > 0) cx - 1 else 0;
     const y: usize = if (cy > 0) cy - 1 else 0;
+    const ctrl = cb & 0x10 != 0;
 
     // bit 6 (0x40) flags a wheel event; lower bit is direction
     if (cb & 0x40 != 0) {
         const dir: inp.ScrollDirection = if (cb & 0x01 == 0) .up else .down;
-        return .{ .mouse = .{ .x = x, .y = y, .action = .{ .scroll = dir } } };
+        return .{ .mouse = .{ .x = x, .y = y, .action = .{ .scroll = dir }, .ctrl = ctrl } };
     }
 
     const button: inp.MouseButton = switch (cb & 0x03) {
@@ -876,6 +879,7 @@ fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
         .x = x,
         .y = y,
         .action = if (press) .{ .press = button } else .{ .release = button },
+        .ctrl = ctrl,
     } };
 }
 
