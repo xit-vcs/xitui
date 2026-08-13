@@ -3,7 +3,7 @@ const layout = @import("./layout.zig");
 const grid = @import("./grid.zig");
 const widget = @import("./widget.zig");
 
-var next_id: usize = 0;
+var next_id = std.atomic.Value(usize).init(0);
 
 pub const FocusKind = union(enum) {
     container,
@@ -42,10 +42,8 @@ pub const Focus = struct {
     version: u64,
 
     fn init(kind: FocusKind) Focus {
-        const id = next_id;
-        next_id += 1;
         return .{
-            .id = id,
+            .id = next_id.fetchAdd(1, .monotonic),
             .kind = kind,
             .child_id = null,
             .grandchild_id = null,
