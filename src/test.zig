@@ -420,6 +420,23 @@ test "StreamTerminal keeps keys in arrival order across feeds" {
     try std.testing.expectEqualStrings("abcd", &got);
 }
 
+test "StreamTerminal resolves utf-8 split across feeds" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    try terminal.writeBytes("a\xe2");
+    try terminal.writeBytes("\x82");
+    try terminal.writeBytes("\xacb");
+
+    try std.testing.expectEqual(@as(u21, 'a'), terminal.popKey().?.codepoint);
+    try std.testing.expectEqual(@as(u21, '€'), terminal.popKey().?.codepoint);
+    try std.testing.expectEqual(@as(u21, 'b'), terminal.popKey().?.codepoint);
+}
+
 test "StreamTerminal resolves a sequence split across feeds" {
     const allocator = std.testing.allocator;
     var output: std.Io.Writer.Allocating = .init(allocator);

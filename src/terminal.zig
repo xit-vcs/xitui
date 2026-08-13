@@ -899,6 +899,9 @@ pub const EscapeParser = struct {
     // the buffered sequence outgrew esc_buffer. its remaining bytes are still
     // consumed up to the terminator, then it reports as one unknown key.
     esc_overflowed: bool,
+    // an incomplete utf-8 codepoint at the end of the last byte feed
+    utf8_buffer: [4]u8,
+    utf8_len: usize,
 
     // fits the reports terminals send unprompted (device attributes, cursor
     // position, mode queries); anything longer is swallowed, not parsed.
@@ -915,6 +918,8 @@ pub const EscapeParser = struct {
             .esc_buffer = try std.ArrayList(u8).initCapacity(allocator, esc_buffer_size),
             .key_queue = std.DoublyLinkedList{},
             .esc_overflowed = false,
+            .utf8_buffer = undefined,
+            .utf8_len = 0,
         };
     }
 
@@ -950,11 +955,36 @@ pub const EscapeParser = struct {
     // sequence cut off at the end stays buffered until the rest arrives, so
     // input may be fed in arbitrary chunks.
     pub fn queueBytes(self: *EscapeParser, bytes: []const u8) !void {
-        const text = std.unicode.Utf8View.init(bytes) catch return;
-        var iter = text.iterator();
-        while (iter.nextCodepoint()) |codepoint| {
-            try self.writeCodepoint(codepoint);
+        for (bytes) |byte| try self.queueByte(byte);
+    }
+
+    fn queueByte(self: *EscapeParser, byte: u8) !void {
+        if (self.utf8_len == 0) {
+            const len = std.unicode.utf8ByteSequenceLength(byte) catch return;
+            if (len == 1) return self.writeCodepoint(byte);
+            self.utf8_buffer[0] = byte;
+            self.utf8_len = 1;
+            return;
         }
+
+        // a new leading byte abandons a malformed partial codepoint but still
+        // gets processed itself
+        if (byte & 0xc0 != 0x80) {
+            self.utf8_len = 0;
+            return self.queueByte(byte);
+        }
+
+        self.utf8_buffer[self.utf8_len] = byte;
+        self.utf8_len += 1;
+        const expected = std.unicode.utf8ByteSequenceLength(self.utf8_buffer[0]) catch unreachable;
+        if (self.utf8_len < expected) return;
+
+        const codepoint = std.unicode.utf8Decode(self.utf8_buffer[0..self.utf8_len]) catch {
+            self.utf8_len = 0;
+            return;
+        };
+        self.utf8_len = 0;
+        try self.writeCodepoint(codepoint);
     }
 
     // report a held-back ESC as the escape key. an ESC is buffered rather than
