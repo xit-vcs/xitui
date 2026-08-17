@@ -72,6 +72,52 @@ test "text box" {
     , str);
 }
 
+test "box grow child fills remaining minimum" {
+    const allocator = std.testing.allocator;
+
+    var box = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .horiz });
+    errdefer box.deinit(allocator);
+
+    var left = try wgt.Text(Widget).init(allocator, "left");
+    errdefer left.deinit(allocator);
+    try box.children.put(allocator, left.getFocus().id, .{
+        .widget = .{ .text = left },
+        .rect = null,
+        .min_size = .{ .width = 4, .height = null },
+    });
+
+    var spacer = try wgt.TextBox(Widget).init(allocator, "", .{ .border_style = null, .wrap_kind = .none });
+    errdefer spacer.deinit(allocator);
+    const spacer_id = spacer.getFocus().id;
+    try box.children.put(allocator, spacer_id, .{
+        .widget = .{ .text_box = spacer },
+        .rect = null,
+        .min_size = null,
+        .flex = .grow,
+    });
+
+    var right = try wgt.Text(Widget).init(allocator, "right");
+    errdefer right.deinit(allocator);
+    try box.children.put(allocator, right.getFocus().id, .{
+        .widget = .{ .text = right },
+        .rect = null,
+        .min_size = .{ .width = 5, .height = null },
+    });
+
+    var widget = Widget{ .box = box };
+    defer widget.deinit(allocator);
+    try widget.build(allocator, .{
+        .min_size = .{ .width = 20, .height = null },
+        .max_size = .{ .width = null, .height = null },
+    }, widget.getFocus());
+
+    const str = try widget.getGrid().?.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("left           right", str);
+    const spacer_child = widget.box.children.get(spacer_id) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 11), spacer_child.rect.?.size.width);
+}
+
 test "text box with wrapping" {
     const allocator = std.testing.allocator;
 

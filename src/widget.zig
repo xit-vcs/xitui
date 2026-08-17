@@ -86,18 +86,20 @@ pub fn Box(comptime Widget: type) type {
         children: std.AutoArrayHashMapUnmanaged(usize, Child),
         options: Options,
 
+        pub const Flex = enum {
+            none,
+            shrink,
+            grow,
+        };
+
         pub const Child = struct {
             widget: Widget,
             rect: ?layout.IRect,
             min_size: ?layout.MaybeSize,
             max_size: ?layout.MaybeSize = null,
-            // flex-shrink: a shrink child yields main-axis space to its
-            // siblings, taking only the leftover after their minimums and
-            // clipping to it (to nothing if need be). the box measures the child
-            // at that budget and pins its size for the rest of layout, so it
-            // behaves as a fixed-size child here — leave min_size/max_size null;
-            // they're overwritten.
-            shrink: bool = false,
+            // flexible children yield space or fill the space left along the
+            // main axis. leave min_size/max_size null; they're overwritten.
+            flex: Flex = .none,
             // skipped this build: occupies no space and isn't drawn, as if it
             // produced no grid. its focus subtree drops out too.
             hidden: bool = false,
@@ -150,8 +152,16 @@ pub fn Box(comptime Widget: type) type {
 
             var sorted_children: std.AutoArrayHashMapUnmanaged(usize, void) = .empty;
             defer sorted_children.deinit(allocator);
+            var grow_children: std.ArrayList(usize) = .empty;
+            defer grow_children.deinit(allocator);
+            var grow_count: usize = 0;
             var should_sort = false;
             for (self.children.values(), 0..) |child, i| {
+                if (child.flex == .grow) {
+                    try grow_children.append(allocator, i);
+                    if (!child.hidden) grow_count += 1;
+                    continue;
+                }
                 try sorted_children.put(allocator, i, {});
                 if (child.min_size != null) {
                     should_sort = true;
@@ -175,6 +185,7 @@ pub fn Box(comptime Widget: type) type {
                     }
                 }
             }
+            for (grow_children.items) |i| try sorted_children.put(allocator, i, {});
 
             var width: usize = 0;
             var height: usize = 0;
@@ -187,7 +198,7 @@ pub fn Box(comptime Widget: type) type {
             const shrink_budget: ?usize = blk: {
                 var any_shrink = false;
                 for (self.children.values()) |child| {
-                    if (child.shrink) {
+                    if (child.flex == .shrink) {
                         any_shrink = true;
                         break;
                     }
@@ -200,7 +211,7 @@ pub fn Box(comptime Widget: type) type {
                 var others: usize = 0;
                 for (self.children.values()) |child| {
                     if (child.hidden) continue;
-                    if (child.shrink) continue;
+                    if (child.flex == .shrink) continue;
                     if (child.min_size) |min_size| {
                         const min_main = switch (self.options.direction) {
                             .horiz => min_size.width,
@@ -222,7 +233,7 @@ pub fn Box(comptime Widget: type) type {
             if (shrink_budget) |budget| {
                 for (self.children.values()) |*child| {
                     if (child.hidden) continue;
-                    if (!child.shrink) continue;
+                    if (child.flex != .shrink) continue;
                     const measure_max: layout.MaybeSize = switch (self.options.direction) {
                         .horiz => .{ .width = budget, .height = remaining_height_maybe },
                         .vert => .{ .width = remaining_width_maybe, .height = budget },
@@ -242,6 +253,11 @@ pub fn Box(comptime Widget: type) type {
                     child.max_size = child.min_size;
                 }
             }
+
+            const grow_target: ?usize = switch (self.options.direction) {
+                .horiz => if (constraint.max_size.width orelse constraint.min_size.width) |target| target -| border_size * 2 else null,
+                .vert => if (constraint.max_size.height orelse constraint.min_size.height) |target| target -| border_size * 2 else null,
+            };
 
             for (sorted_children.keys(), 0..) |child_index, sorted_child_index| {
                 var child = &self.children.values()[child_index];
@@ -310,10 +326,21 @@ pub fn Box(comptime Widget: type) type {
                     }
                 }
 
+                var grow_size: ?usize = null;
+                if (child.flex == .grow) {
+                    if (grow_target) |target| {
+                        const used = switch (self.options.direction) {
+                            .horiz => width,
+                            .vert => height,
+                        };
+                        grow_size = (target -| used) / grow_count;
+                    }
+                    grow_count -= 1;
+                }
+
                 // propagate whatever's left of our parent's min-size to the
-                // last child along our primary axis. a shrink child is exempt:
-                // it's meant to yield space, not be forced to fill it.
-                if (sorted_child_index + 1 == sorted_children.count() and !child.shrink) {
+                // last fixed child. flexible children handle that space above.
+                if (sorted_child_index + 1 == sorted_children.count() and child.flex == .none) {
                     switch (self.options.direction) {
                         .vert => if (constraint.min_size.height) |min_h| {
                             const inner_min = if (min_h > border_size * 2) min_h - border_size * 2 else 0;
@@ -339,8 +366,19 @@ pub fn Box(comptime Widget: type) type {
                 // clamp the granted max size by any per-child cap so the
                 // child can't grow past its declared limit even if there's
                 // more room available in the parent.
-                const child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
-                const child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
+                var child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
+                var child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
+
+                if (grow_size) |size| switch (self.options.direction) {
+                    .horiz => {
+                        child_min_size.width = size;
+                        child_max_width = size;
+                    },
+                    .vert => {
+                        child_min_size.height = size;
+                        child_max_height = size;
+                    },
+                };
 
                 if (self.options.stretch) {
                     switch (self.options.direction) {
