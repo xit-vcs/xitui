@@ -558,27 +558,12 @@ pub fn TextBox(comptime Widget: type) type {
             content: []const u8,
             options: Options,
         ) !TextBox(Widget) {
-            var lines: std.ArrayList([]const u8) = .empty;
+            var lines = try splitLines(allocator, content);
             errdefer {
                 for (lines.items) |line| {
                     allocator.free(line);
                 }
                 lines.deinit(allocator);
-            }
-
-            {
-                var line: std.ArrayList(u8) = .empty;
-                errdefer line.deinit(allocator);
-
-                var utf8 = (try std.unicode.Utf8View.init(content)).iterator();
-                while (utf8.nextCodepointSlice()) |char| {
-                    if (std.mem.eql(u8, char, "\n")) {
-                        try lines.append(allocator, try line.toOwnedSlice(allocator));
-                    } else {
-                        try line.appendSlice(allocator, char);
-                    }
-                }
-                try lines.append(allocator, try line.toOwnedSlice(allocator));
             }
 
             var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert, .label = options.label, .bottom_label = options.bottom_label });
@@ -601,6 +586,21 @@ pub fn TextBox(comptime Widget: type) type {
                 allocator.free(line);
             }
             self.lines.deinit(allocator);
+        }
+
+        pub fn setContent(self: *TextBox(Widget), allocator: std.mem.Allocator, content: []const u8) !void {
+            if (std.mem.eql(u8, self.content, content)) {
+                self.content = content;
+                return;
+            }
+
+            const lines = try splitLines(allocator, content);
+            for (self.lines.items) |line| allocator.free(line);
+            self.lines.deinit(allocator);
+            self.lines = lines;
+            self.content = content;
+            self.last_wrap_width = null;
+            try resetTextChildren(allocator, &self.box, self.lines.items);
         }
 
         pub fn build(self: *TextBox(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
@@ -736,6 +736,35 @@ pub fn TextBox(comptime Widget: type) type {
                 errdefer text.deinit(allocator);
                 try box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
             }
+        }
+
+        fn splitLines(allocator: std.mem.Allocator, content: []const u8) !std.ArrayList([]const u8) {
+            var lines: std.ArrayList([]const u8) = .empty;
+            errdefer {
+                for (lines.items) |line| allocator.free(line);
+                lines.deinit(allocator);
+            }
+            var line: std.ArrayList(u8) = .empty;
+            errdefer line.deinit(allocator);
+
+            var utf8 = (try std.unicode.Utf8View.init(content)).iterator();
+            while (utf8.nextCodepointSlice()) |char| {
+                if (std.mem.eql(u8, char, "\n")) {
+                    const owned = try line.toOwnedSlice(allocator);
+                    lines.append(allocator, owned) catch |err| {
+                        allocator.free(owned);
+                        return err;
+                    };
+                } else {
+                    try line.appendSlice(allocator, char);
+                }
+            }
+            const owned = try line.toOwnedSlice(allocator);
+            lines.append(allocator, owned) catch |err| {
+                allocator.free(owned);
+                return err;
+            };
+            return lines;
         }
 
         fn flushPendingWord(
