@@ -558,7 +558,10 @@ pub fn TextBox(comptime Widget: type) type {
             content: []const u8,
             options: Options,
         ) !TextBox(Widget) {
-            var lines = try splitLines(allocator, content);
+            const owned_content = try allocator.dupe(u8, content);
+            errdefer allocator.free(owned_content);
+
+            var lines = try splitLines(allocator, owned_content);
             errdefer {
                 for (lines.items) |line| {
                     allocator.free(line);
@@ -575,7 +578,7 @@ pub fn TextBox(comptime Widget: type) type {
                 .box = box,
                 .options = options,
                 .last_wrap_width = null,
-                .content = content,
+                .content = owned_content,
                 .lines = lines,
             };
         }
@@ -586,19 +589,22 @@ pub fn TextBox(comptime Widget: type) type {
                 allocator.free(line);
             }
             self.lines.deinit(allocator);
+            allocator.free(self.content);
         }
 
         pub fn setContent(self: *TextBox(Widget), allocator: std.mem.Allocator, content: []const u8) !void {
-            if (std.mem.eql(u8, self.content, content)) {
-                self.content = content;
-                return;
-            }
+            if (std.mem.eql(u8, self.content, content)) return;
 
-            const lines = try splitLines(allocator, content);
+            const owned_content = try allocator.dupe(u8, content);
+            const lines = splitLines(allocator, owned_content) catch |err| {
+                allocator.free(owned_content);
+                return err;
+            };
             for (self.lines.items) |line| allocator.free(line);
             self.lines.deinit(allocator);
             self.lines = lines;
-            self.content = content;
+            allocator.free(self.content);
+            self.content = owned_content;
             self.last_wrap_width = null;
             try resetTextChildren(allocator, &self.box, self.lines.items);
         }
