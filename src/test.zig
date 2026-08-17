@@ -118,6 +118,56 @@ test "box grow child fills remaining minimum" {
     try std.testing.expectEqual(@as(usize, 11), spacer_child.rect.?.size.width);
 }
 
+test "box shrink measurement does not change child constraints" {
+    const allocator = std.testing.allocator;
+
+    var box = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .horiz });
+    errdefer box.deinit(allocator);
+
+    var shrinking = try wgt.TextBox(Widget).init(allocator, "abcdefghij", .{ .border_style = null, .wrap_kind = .none });
+    errdefer shrinking.deinit(allocator);
+    const shrinking_id = shrinking.getFocus().id;
+    try box.children.put(allocator, shrinking_id, .{
+        .widget = .{ .text_box = shrinking },
+        .rect = null,
+        .min_size = null,
+        .flex = .shrink,
+    });
+
+    var fixed = try wgt.Text(Widget).init(allocator, "fixed");
+    errdefer fixed.deinit(allocator);
+    try box.children.put(allocator, fixed.getFocus().id, .{
+        .widget = .{ .text = fixed },
+        .rect = null,
+        .min_size = .{ .width = 5, .height = null },
+    });
+
+    var widget = Widget{ .box = box };
+    defer widget.deinit(allocator);
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 8, .height = null },
+    }, widget.getFocus());
+
+    {
+        const str = try widget.getGrid().?.toString(allocator);
+        defer allocator.free(str);
+        try std.testing.expectEqualStrings("abcfixed", str);
+    }
+    const shrinking_child = widget.box.children.get(shrinking_id) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(shrinking_child.min_size == null);
+    try std.testing.expect(shrinking_child.max_size == null);
+
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = null, .height = null },
+    }, widget.getFocus());
+
+    const str = try widget.getGrid().?.toString(allocator);
+    defer allocator.free(str);
+    try std.testing.expectEqualStrings("abcdefghijfixed", str);
+}
+
 test "text box with wrapping" {
     const allocator = std.testing.allocator;
 

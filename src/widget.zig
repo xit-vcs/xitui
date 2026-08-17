@@ -150,19 +150,26 @@ pub fn Box(comptime Widget: type) type {
                 if (max_height <= border_size * 2) return;
             }
 
-            var sorted_children: std.AutoArrayHashMapUnmanaged(usize, void) = .empty;
-            defer sorted_children.deinit(allocator);
-            var grow_children: std.ArrayList(usize) = .empty;
-            defer grow_children.deinit(allocator);
+            const LayoutChild = struct {
+                index: usize,
+                min_size: layout.MaybeSize,
+                max_size: layout.MaybeSize,
+            };
+            const no_size: layout.MaybeSize = .{ .width = null, .height = null };
+            var layout_order: std.ArrayList(LayoutChild) = .empty;
+            defer layout_order.deinit(allocator);
             var grow_count: usize = 0;
             var should_sort = false;
             for (self.children.values(), 0..) |child, i| {
                 if (child.flex == .grow) {
-                    try grow_children.append(allocator, i);
                     if (!child.hidden) grow_count += 1;
                     continue;
                 }
-                try sorted_children.put(allocator, i, {});
+                try layout_order.append(allocator, .{
+                    .index = i,
+                    .min_size = child.min_size orelse no_size,
+                    .max_size = child.max_size orelse no_size,
+                });
                 if (child.min_size != null) {
                     should_sort = true;
                 }
@@ -171,9 +178,9 @@ pub fn Box(comptime Widget: type) type {
                 const SortCtx = struct {
                     selected_index: usize,
 
-                    pub fn lessThan(ctx: @This(), a_index: usize, b_index: usize) bool {
-                        const ia: isize = @intCast(a_index);
-                        const ib: isize = @intCast(b_index);
+                    pub fn lessThan(ctx: @This(), a: LayoutChild, b: LayoutChild) bool {
+                        const ia: isize = @intCast(a.index);
+                        const ib: isize = @intCast(b.index);
                         const a_priority = if (ia <= ctx.selected_index) ia else -ia;
                         const b_priority = if (ib <= ctx.selected_index) ib else -ib;
                         return a_priority > b_priority;
@@ -181,11 +188,18 @@ pub fn Box(comptime Widget: type) type {
                 };
                 if (self.getFocus().child_id) |child_id| {
                     if (self.children.getIndex(child_id)) |index| {
-                        sorted_children.sort(SortCtx{ .selected_index = index });
+                        std.mem.sort(LayoutChild, layout_order.items, SortCtx{ .selected_index = index }, SortCtx.lessThan);
                     }
                 }
             }
-            for (grow_children.items) |i| try sorted_children.put(allocator, i, {});
+            for (self.children.values(), 0..) |child, i| {
+                if (child.flex != .grow) continue;
+                try layout_order.append(allocator, .{
+                    .index = i,
+                    .min_size = child.min_size orelse no_size,
+                    .max_size = child.max_size orelse no_size,
+                });
+            }
 
             var width: usize = 0;
             var height: usize = 0;
@@ -197,7 +211,8 @@ pub fn Box(comptime Widget: type) type {
             // no shrink child or the main axis is unbounded.
             const shrink_budget: ?usize = blk: {
                 var any_shrink = false;
-                for (self.children.values()) |child| {
+                for (layout_order.items) |layout_child| {
+                    const child = self.children.values()[layout_child.index];
                     if (child.flex == .shrink) {
                         any_shrink = true;
                         break;
@@ -209,16 +224,15 @@ pub fn Box(comptime Widget: type) type {
                     .vert => remaining_height_maybe,
                 } orelse break :blk null;
                 var others: usize = 0;
-                for (self.children.values()) |child| {
+                for (layout_order.items) |layout_child| {
+                    const child = self.children.values()[layout_child.index];
                     if (child.hidden) continue;
                     if (child.flex == .shrink) continue;
-                    if (child.min_size) |min_size| {
-                        const min_main = switch (self.options.direction) {
-                            .horiz => min_size.width,
-                            .vert => min_size.height,
-                        };
-                        others += min_main orelse 0;
-                    }
+                    const min_main = switch (self.options.direction) {
+                        .horiz => layout_child.min_size.width,
+                        .vert => layout_child.min_size.height,
+                    };
+                    others += min_main orelse 0;
                 }
                 break :blk main_remaining -| others;
             };
@@ -231,7 +245,8 @@ pub fn Box(comptime Widget: type) type {
             // the child clips when the leftover is tight and disappears at zero —
             // yielding before any sibling is dropped.
             if (shrink_budget) |budget| {
-                for (self.children.values()) |*child| {
+                for (layout_order.items) |*layout_child| {
+                    const child = &self.children.values()[layout_child.index];
                     if (child.hidden) continue;
                     if (child.flex != .shrink) continue;
                     const measure_max: layout.MaybeSize = switch (self.options.direction) {
@@ -246,11 +261,11 @@ pub fn Box(comptime Widget: type) type {
                         .horiz => grid.size.width,
                         .vert => grid.size.height,
                     } else 0;
-                    child.min_size = switch (self.options.direction) {
+                    layout_child.min_size = switch (self.options.direction) {
                         .horiz => .{ .width = measured, .height = null },
                         .vert => .{ .width = null, .height = measured },
                     };
-                    child.max_size = child.min_size;
+                    layout_child.max_size = layout_child.min_size;
                 }
             }
 
@@ -259,8 +274,8 @@ pub fn Box(comptime Widget: type) type {
                 .vert => if (constraint.max_size.height orelse constraint.min_size.height) |target| target -| border_size * 2 else null,
             };
 
-            for (sorted_children.keys(), 0..) |child_index, sorted_child_index| {
-                var child = &self.children.values()[child_index];
+            for (layout_order.items, 0..) |layout_child, sorted_child_index| {
+                var child = &self.children.values()[layout_child.index];
                 child.rect = null;
                 child.widget.clearGrid();
 
@@ -272,18 +287,14 @@ pub fn Box(comptime Widget: type) type {
                 if (sorted_child_index > 0) {
                     if (remaining_width_maybe) |remaining_width| {
                         if (remaining_width <= 0) continue;
-                        if (child.min_size) |min_size| {
-                            if (min_size.width) |min_width| {
-                                if (remaining_width < min_width) continue;
-                            }
+                        if (layout_child.min_size.width) |min_width| {
+                            if (remaining_width < min_width) continue;
                         }
                     }
                     if (remaining_height_maybe) |remaining_height| {
                         if (remaining_height <= 0) continue;
-                        if (child.min_size) |min_size| {
-                            if (min_size.height) |min_height| {
-                                if (remaining_height < min_height) continue;
-                            }
+                        if (layout_child.min_size.height) |min_height| {
+                            if (remaining_height < min_height) continue;
                         }
                     }
                 }
@@ -296,31 +307,27 @@ pub fn Box(comptime Widget: type) type {
                 // well-behaved sibling.
                 var expected_remaining_width_maybe = remaining_width_maybe;
                 var expected_remaining_height_maybe = remaining_height_maybe;
-                var child_min_size: layout.MaybeSize = child.min_size orelse .{ .width = null, .height = null };
+                var child_min_size = layout_child.min_size;
                 if (expected_remaining_width_maybe) |*expected_remaining_width| {
                     const self_min_width = child_min_size.width orelse 0;
-                    for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
-                        const next_child = &self.children.values()[sorted_children.keys()[next_sorted_child_index]];
+                    for (layout_order.items[sorted_child_index + 1 ..]) |next_layout_child| {
+                        const next_child = &self.children.values()[next_layout_child.index];
                         if (next_child.hidden) continue;
-                        if (next_child.min_size) |next_min_size| {
-                            if (next_min_size.width) |next_min_width| {
-                                if (expected_remaining_width.* >= self_min_width + next_min_width) {
-                                    expected_remaining_width.* -= next_min_width;
-                                }
+                        if (next_layout_child.min_size.width) |next_min_width| {
+                            if (expected_remaining_width.* >= self_min_width + next_min_width) {
+                                expected_remaining_width.* -= next_min_width;
                             }
                         }
                     }
                 }
                 if (expected_remaining_height_maybe) |*expected_remaining_height| {
                     const self_min_height = child_min_size.height orelse 0;
-                    for (sorted_child_index + 1..sorted_children.count()) |next_sorted_child_index| {
-                        const next_child = &self.children.values()[sorted_children.keys()[next_sorted_child_index]];
+                    for (layout_order.items[sorted_child_index + 1 ..]) |next_layout_child| {
+                        const next_child = &self.children.values()[next_layout_child.index];
                         if (next_child.hidden) continue;
-                        if (next_child.min_size) |next_min_size| {
-                            if (next_min_size.height) |next_min_height| {
-                                if (expected_remaining_height.* >= self_min_height + next_min_height) {
-                                    expected_remaining_height.* -= next_min_height;
-                                }
+                        if (next_layout_child.min_size.height) |next_min_height| {
+                            if (expected_remaining_height.* >= self_min_height + next_min_height) {
+                                expected_remaining_height.* -= next_min_height;
                             }
                         }
                     }
@@ -340,7 +347,7 @@ pub fn Box(comptime Widget: type) type {
 
                 // propagate whatever's left of our parent's min-size to the
                 // last fixed child. flexible children handle that space above.
-                if (sorted_child_index + 1 == sorted_children.count() and child.flex == .none) {
+                if (sorted_child_index + 1 == layout_order.items.len and child.flex == .none) {
                     switch (self.options.direction) {
                         .vert => if (constraint.min_size.height) |min_h| {
                             const inner_min = if (min_h > border_size * 2) min_h - border_size * 2 else 0;
@@ -366,8 +373,8 @@ pub fn Box(comptime Widget: type) type {
                 // clamp the granted max size by any per-child cap so the
                 // child can't grow past its declared limit even if there's
                 // more room available in the parent.
-                var child_max_width = clampMax(expected_remaining_width_maybe, if (child.max_size) |ms| ms.width else null);
-                var child_max_height = clampMax(expected_remaining_height_maybe, if (child.max_size) |ms| ms.height else null);
+                var child_max_width = clampMax(expected_remaining_width_maybe, layout_child.max_size.width);
+                var child_max_height = clampMax(expected_remaining_height_maybe, layout_child.max_size.height);
 
                 if (grow_size) |size| switch (self.options.direction) {
                     .horiz => {
