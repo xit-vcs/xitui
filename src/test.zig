@@ -683,6 +683,26 @@ test "StreamTerminal renders a widget tree" {
     try std.testing.expect(std.mem.indexOfScalar(u8, rendered, 'h') != null);
     // and a cursor-move CSI ("\x1B[r;cH") since render positions every rune
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1B[") != null);
+
+    const unchanged_start = output.written().len;
+    try std.testing.expect(!try terminal.render(&widget, &last_grid, &last_size));
+    try std.testing.expectEqualStrings(
+        "\x1B[?2026h\x1B[?2026l",
+        output.written()[unchanged_start..],
+    );
+
+    try widget.text_box.setContent(allocator, "jello");
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 20, .height = 5 },
+    }, widget.getFocus());
+
+    const changed_start = output.written().len;
+    try std.testing.expect(try terminal.render(&widget, &last_grid, &last_size));
+    try std.testing.expectEqualStrings(
+        "\x1B[?2026h\x1B[2;2Hj\x1B[?2026l",
+        output.written()[changed_start..],
+    );
 }
 
 test "StreamTerminal init and deinit emit alt-screen lifecycle" {

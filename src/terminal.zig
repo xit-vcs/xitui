@@ -222,8 +222,12 @@ pub const Core = switch (builtin.os.tag) {
             if (GetConsoleMode(out_handle, &self.tty.old_out_mode) == .FALSE) {
                 return error.FailedToGetConsoleMode;
             }
+            const ENABLE_PROCESSED_OUTPUT: std.os.windows.DWORD = 0x0001;
             const ENABLE_WRAP_AT_EOL_OUTPUT: std.os.windows.DWORD = 0x0002;
-            const new_out_mode = self.tty.old_out_mode & ~ENABLE_WRAP_AT_EOL_OUTPUT;
+            const ENABLE_VIRTUAL_TERMINAL_PROCESSING: std.os.windows.DWORD = 0x0004;
+            // enable processing for the ansi escape codes used by the renderer.
+            // virtual terminal processing requires processed output.
+            const new_out_mode = (self.tty.old_out_mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING) & ~ENABLE_WRAP_AT_EOL_OUTPUT;
             if (SetConsoleMode(out_handle, new_out_mode) == .FALSE) {
                 return error.FailedToSetConsoleMode;
             }
@@ -237,9 +241,12 @@ pub const Core = switch (builtin.os.tag) {
             const ENABLE_MOUSE_INPUT: std.os.windows.DWORD = 0x0010;
             const ENABLE_QUICK_EDIT_MODE: std.os.windows.DWORD = 0x0040;
             const ENABLE_EXTENDED_FLAGS: std.os.windows.DWORD = 0x0080;
+            const ENABLE_VIRTUAL_TERMINAL_INPUT: std.os.windows.DWORD = 0x0200;
             // ENABLE_EXTENDED_FLAGS is required for ENABLE_QUICK_EDIT_MODE to
             // take effect; quick edit mode would otherwise swallow mouse events.
-            const new_in_mode = (self.tty.old_in_mode | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT) & ~ENABLE_QUICK_EDIT_MODE;
+            // virtual terminal input must stay off because input is read as
+            // console events rather than escape sequences.
+            const new_in_mode = (self.tty.old_in_mode | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT) & ~(ENABLE_QUICK_EDIT_MODE | ENABLE_VIRTUAL_TERMINAL_INPUT);
             if (SetConsoleMode(in_handle, new_in_mode) == .FALSE) {
                 return error.FailedToSetConsoleMode;
             }
@@ -734,29 +741,22 @@ pub fn renderToWriter(
         }
     } else {
         if (root_widget.getGrid()) |grid| {
-            // clear cells that are in last grid but not current grid
             for (0..last_grid.size.height) |y| {
                 for (0..last_grid.size.width) |x| {
                     const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
-                    // a continuation column is occupied by the wide rune to
-                    // its left, not empty — clearing it would chop the glyph
-                    if (cell.rune == null and !cell.continuation) {
-                        try writeAt(writer, " ", .{}, x, y, size.height);
-                    }
+                    const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
+                    if (cell.eql(last_cell)) continue;
 
-                    if (!grid_changed) {
-                        const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
-                        grid_changed = !cell.eql(last_cell);
-                    }
-                }
-            }
-
-            // render the grid
-            for (0..grid.size.height) |y| {
-                for (0..grid.size.width) |x| {
-                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
+                    grid_changed = true;
                     if (cell.rune) |rune| {
                         try writeAt(writer, rune, cell.style, x, y, size.height);
+                        continue;
+                    }
+
+                    // a continuation column is occupied by the wide rune to
+                    // its left, not empty — clearing it would chop the glyph
+                    if (!cell.continuation) {
+                        try writeAt(writer, " ", .{}, x, y, size.height);
                     }
                 }
             }
