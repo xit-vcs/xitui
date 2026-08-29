@@ -851,6 +851,8 @@ pub fn TextInput(comptime Widget: type) type {
             // optional form-field name; the web renderer emits it as the
             // HTML `name` attribute so the value is submitted with that key.
             name: []const u8 = "",
+            // prevent changes to the content while retaining cursor navigation
+            read_only: bool = false,
             // when false, the content (and cursor) aren't drawn into the grid
             render_content: bool = true,
             // edit multiple lines: enter inserts a newline, long lines soft
@@ -1209,6 +1211,10 @@ pub fn TextInput(comptime Widget: type) type {
 
         pub fn input(self: *TextInput(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
             _ = root_focus;
+            if (self.options.read_only) switch (key) {
+                .enter, .delete, .backspace, .codepoint => return,
+                else => {},
+            };
             if (self.options.multiline) {
                 switch (key) {
                     .enter => {
