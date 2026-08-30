@@ -8,10 +8,10 @@ const Focus = xitui.focus.Focus;
 const StreamTerminal = xitui.stream_terminal.StreamTerminal;
 
 pub const Widget = union(enum) {
-    text: wgt.Text(Widget),
+    text: wgt.Text,
     box: wgt.Box(Widget),
-    text_box: wgt.TextBox(Widget),
-    text_input: wgt.TextInput(Widget),
+    text_box: wgt.TextBox,
+    text_input: wgt.TextInput,
     scroll: wgt.Scroll(Widget),
 
     pub fn deinit(self: *Widget, allocator: std.mem.Allocator) void {
@@ -54,7 +54,7 @@ pub const Widget = union(enum) {
 test "text box" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!", .{ .border_style = .single, .wrap_kind = .none }) };
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "Hello, world!", .{ .border_style = .single, .wrap_kind = .none }) };
     defer widget.deinit(allocator);
 
     try widget.build(allocator, .{
@@ -78,7 +78,7 @@ test "box grow child fills remaining minimum" {
     var box = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .horiz });
     errdefer box.deinit(allocator);
 
-    var left = try wgt.Text(Widget).init(allocator, "left");
+    var left = try wgt.Text.init(allocator, "left");
     errdefer left.deinit(allocator);
     try box.children.put(allocator, left.getFocus().id, .{
         .widget = .{ .text = left },
@@ -86,7 +86,7 @@ test "box grow child fills remaining minimum" {
         .min_size = .{ .width = 4, .height = null },
     });
 
-    var spacer = try wgt.TextBox(Widget).init(allocator, "", .{ .border_style = null, .wrap_kind = .none });
+    var spacer = try wgt.TextBox.init(allocator, "", .{ .border_style = null, .wrap_kind = .none });
     errdefer spacer.deinit(allocator);
     const spacer_id = spacer.getFocus().id;
     try box.children.put(allocator, spacer_id, .{
@@ -96,7 +96,7 @@ test "box grow child fills remaining minimum" {
         .flex = .grow,
     });
 
-    var right = try wgt.Text(Widget).init(allocator, "right");
+    var right = try wgt.Text.init(allocator, "right");
     errdefer right.deinit(allocator);
     try box.children.put(allocator, right.getFocus().id, .{
         .widget = .{ .text = right },
@@ -124,7 +124,7 @@ test "box shrink measurement does not change child constraints" {
     var box = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .horiz });
     errdefer box.deinit(allocator);
 
-    var shrinking = try wgt.TextBox(Widget).init(allocator, "abcdefghij", .{ .border_style = null, .wrap_kind = .none });
+    var shrinking = try wgt.TextBox.init(allocator, "abcdefghij", .{ .border_style = null, .wrap_kind = .none });
     errdefer shrinking.deinit(allocator);
     const shrinking_id = shrinking.getFocus().id;
     try box.children.put(allocator, shrinking_id, .{
@@ -134,7 +134,7 @@ test "box shrink measurement does not change child constraints" {
         .flex = .shrink,
     });
 
-    var fixed = try wgt.Text(Widget).init(allocator, "fixed");
+    var fixed = try wgt.Text.init(allocator, "fixed");
     errdefer fixed.deinit(allocator);
     try box.children.put(allocator, fixed.getFocus().id, .{
         .widget = .{ .text = fixed },
@@ -171,7 +171,7 @@ test "box shrink measurement does not change child constraints" {
 test "text box with wrapping" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "Hello, world!\nGöödbye, world!", .{ .border_style = .single, .wrap_kind = .char }) };
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "Hello, world!\nGöödbye, world!", .{ .border_style = .single, .wrap_kind = .char }) };
     defer widget.deinit(allocator);
 
     try widget.build(allocator, .{
@@ -235,7 +235,7 @@ test "text box with wrapping" {
 test "text box with wide characters" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "你好, world!", .{ .border_style = .single, .wrap_kind = .none }) };
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "你好, world!", .{ .border_style = .single, .wrap_kind = .none }) };
     defer widget.deinit(allocator);
 
     try widget.build(allocator, .{
@@ -257,7 +257,7 @@ test "text box with wide characters" {
 test "text box char-wraps wide characters by columns" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "你好世界", .{ .border_style = .single, .wrap_kind = .char }) };
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "你好世界", .{ .border_style = .single, .wrap_kind = .char }) };
     defer widget.deinit(allocator);
 
     try widget.build(allocator, .{
@@ -280,7 +280,7 @@ test "text box char-wraps wide characters by columns" {
 test "text box wraps a wide character that does not fit the last column" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "ab你好", .{ .border_style = .single, .wrap_kind = .char }) };
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "ab你好", .{ .border_style = .single, .wrap_kind = .char }) };
     defer widget.deinit(allocator);
 
     // inner width 5: "ab" (2) + 你 (2) fit, but 好 would straddle the edge,
@@ -306,7 +306,7 @@ test "text box word-wraps an unbroken wide run by columns" {
 
     // no spaces to break at, so the run is longer than a line and falls
     // back to char-wrapping — which must count columns, not codepoints
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "你好世界你好", .{ .border_style = .single, .wrap_kind = .word }) };
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "你好世界你好", .{ .border_style = .single, .wrap_kind = .word }) };
     defer widget.deinit(allocator);
 
     try widget.build(allocator, .{
@@ -329,7 +329,7 @@ test "text box word-wraps an unbroken wide run by columns" {
 test "horizontal scroll clips wide characters at the view edges" {
     const allocator = std.testing.allocator;
 
-    const text = Widget{ .text = try wgt.Text(Widget).init(allocator, "你好世界") };
+    const text = Widget{ .text = try wgt.Text.init(allocator, "你好世界") };
     var widget = Widget{ .scroll = try wgt.Scroll(Widget).init(allocator, text, .{ .direction = .horiz, .show_bar = false }) };
     defer widget.deinit(allocator);
 
@@ -363,7 +363,7 @@ test "horizontal scroll clips wide characters at the view edges" {
 test "text input scrolls wide content by columns" {
     const allocator = std.testing.allocator;
 
-    var widget = Widget{ .text_input = try wgt.TextInput(Widget).init(allocator, .{ .border_style = null, .visible_width = 4 }) };
+    var widget = Widget{ .text_input = try wgt.TextInput.init(allocator, .{ .border_style = null, .visible_width = 4 }) };
     defer widget.deinit(allocator);
 
     // 你(2) 好(2) a b c: the cursor lands past 'c', so the window slides
@@ -382,7 +382,7 @@ test "text input scrolls wide content by columns" {
 test "vertical scroll bar" {
     const allocator = std.testing.allocator;
 
-    const text_box = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "aaaa\nbbbb\ncccc\ndddd\neeee\nffff", .{ .border_style = null, .wrap_kind = .none }) };
+    const text_box = Widget{ .text_box = try wgt.TextBox.init(allocator, "aaaa\nbbbb\ncccc\ndddd\neeee\nffff", .{ .border_style = null, .wrap_kind = .none }) };
     var widget = Widget{ .scroll = try wgt.Scroll(Widget).init(allocator, text_box, .{ .direction = .vert, .show_bar = true }) };
     defer widget.deinit(allocator);
 
@@ -426,7 +426,7 @@ test "vertical scroll bar" {
 test "scroll bar hidden when content fits" {
     const allocator = std.testing.allocator;
 
-    const text_box = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "aaaa\nbbbb\ncccc", .{ .border_style = null, .wrap_kind = .none }) };
+    const text_box = Widget{ .text_box = try wgt.TextBox.init(allocator, "aaaa\nbbbb\ncccc", .{ .border_style = null, .wrap_kind = .none }) };
     var widget = Widget{ .scroll = try wgt.Scroll(Widget).init(allocator, text_box, .{ .direction = .vert, .show_bar = true }) };
     defer widget.deinit(allocator);
 
@@ -669,7 +669,7 @@ test "StreamTerminal renders a widget tree" {
     // can examine only what render emits.
     const startup_len = output.written().len;
 
-    var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "hello", .{ .border_style = .single, .wrap_kind = .none }) };
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "hello", .{ .border_style = .single, .wrap_kind = .none }) };
     defer widget.deinit(allocator);
 
     _ = try terminal.render(&widget);

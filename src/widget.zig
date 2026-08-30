@@ -8,83 +8,97 @@ const draw = @import("./draw.zig");
 
 pub const BorderStyle = draw.BorderStyle;
 
-pub fn Text(comptime Widget: type) type {
-    return struct {
-        focus: *Focus,
-        grid: ?Grid,
-        content: []const u8,
+pub const Text = struct {
+    focus: *Focus,
+    grid: ?Grid,
+    content: []const u8,
 
-        pub fn init(allocator: std.mem.Allocator, content: []const u8) !Text(Widget) {
-            return .{
-                .focus = try Focus.create(allocator, .text),
-                .grid = null,
-                .content = content,
-            };
+    pub fn init(allocator: std.mem.Allocator, content: []const u8) !Text {
+        return .{
+            .focus = try Focus.create(allocator, .text),
+            .grid = null,
+            .content = content,
+        };
+    }
+
+    pub fn deinit(self: *Text, allocator: std.mem.Allocator) void {
+        self.focus.destroy(allocator);
+        self.clearGrid();
+    }
+
+    pub fn build(self: *Text, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
+        _ = root_focus;
+        self.clearGrid();
+        // a zero-width or zero-height budget means render nothing
+        if (constraint.max_size.width) |max_width| {
+            if (max_width == 0) return;
         }
-
-        pub fn deinit(self: *Text(Widget), allocator: std.mem.Allocator) void {
-            self.focus.destroy(allocator);
-            self.clearGrid();
+        if (constraint.max_size.height) |max_height| {
+            if (max_height == 0) return;
         }
-
-        pub fn build(self: *Text(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
-            _ = root_focus;
-            self.clearGrid();
-            // a zero-width or zero-height budget means render nothing
-            if (constraint.max_size.width) |max_width| {
-                if (max_width == 0) return;
+        // measure in display columns, not codepoints: wide (e.g. CJK)
+        // runes occupy two cells
+        const content_width = try wth.displayWidth(self.content);
+        var grid = try Grid.init(allocator, .{ .width = @max(1, @min(content_width, constraint.max_size.width orelse content_width)), .height = 1 });
+        errdefer grid.deinit();
+        var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
+        var i: usize = 0;
+        while (utf8.nextCodepoint()) |char| {
+            const w = wth.cellWidth(char);
+            if (i + w > grid.size.width) {
+                break;
             }
-            if (constraint.max_size.height) |max_height| {
-                if (max_height == 0) return;
-            }
-            // measure in display columns, not codepoints: wide (e.g. CJK)
-            // runes occupy two cells
-            const content_width = try wth.displayWidth(self.content);
-            var grid = try Grid.init(allocator, .{ .width = @max(1, @min(content_width, constraint.max_size.width orelse content_width)), .height = 1 });
-            errdefer grid.deinit();
-            var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
-            var i: usize = 0;
-            while (utf8.nextCodepoint()) |char| {
-                const w = wth.cellWidth(char);
-                if (i + w > grid.size.width) {
-                    break;
-                }
-                try grid.setRune(i, 0, char);
-                i += w;
-            }
-            self.grid = grid;
+            try grid.setRune(i, 0, char);
+            i += w;
         }
+        self.grid = grid;
+    }
 
-        pub fn input(self: *Text(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
-            _ = self;
-            _ = allocator;
-            _ = key;
-            _ = root_focus;
-        }
+    pub fn input(self: *Text, allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
+        _ = self;
+        _ = allocator;
+        _ = key;
+        _ = root_focus;
+    }
 
-        pub fn clearGrid(self: *Text(Widget)) void {
-            if (self.grid) |*grid| {
-                grid.deinit();
-                self.grid = null;
-            }
+    pub fn clearGrid(self: *Text) void {
+        if (self.grid) |*grid| {
+            grid.deinit();
+            self.grid = null;
         }
+    }
 
-        pub fn getGrid(self: Text(Widget)) ?Grid {
-            return self.grid;
-        }
+    pub fn getGrid(self: Text) ?Grid {
+        return self.grid;
+    }
 
-        pub fn getFocus(self: *Text(Widget)) *Focus {
-            return self.focus;
-        }
-    };
-}
+    pub fn getFocus(self: *Text) *Focus {
+        return self.focus;
+    }
+};
+
+pub const BoxDirection = enum {
+    vert,
+    horiz,
+};
+
+pub const BoxOptions = struct {
+    border_style: ?draw.BorderStyle,
+    rounded_corners: bool = false,
+    direction: BoxDirection,
+    // optional labels rendered over the top and bottom borders.
+    label: []const u8 = "",
+    bottom_label: []const u8 = "",
+    // force each child to fill the cross axis when it's bounded.
+    stretch: bool = false,
+};
 
 pub fn Box(comptime Widget: type) type {
     return struct {
         focus: *Focus,
         grid: ?Grid,
         children: std.AutoArrayHashMapUnmanaged(usize, Child),
-        options: Options,
+        options: BoxOptions,
 
         pub const Flex = enum {
             none,
@@ -105,23 +119,7 @@ pub fn Box(comptime Widget: type) type {
             hidden: bool = false,
         };
 
-        pub const Direction = enum {
-            vert,
-            horiz,
-        };
-
-        pub const Options = struct {
-            border_style: ?draw.BorderStyle,
-            rounded_corners: bool = false,
-            direction: Direction,
-            // optional labels rendered over the top and bottom borders.
-            label: []const u8 = "",
-            bottom_label: []const u8 = "",
-            // force each child to fill the cross axis when it's bounded.
-            stretch: bool = false,
-        };
-
-        pub fn init(allocator: std.mem.Allocator, options: Options) !Box(Widget) {
+        pub fn init(allocator: std.mem.Allocator, options: BoxOptions) !Box(Widget) {
             return .{
                 .focus = try Focus.create(allocator, .container),
                 .grid = null,
@@ -536,729 +534,739 @@ pub const WrapKind = enum {
     word,
 };
 
-pub fn TextBox(comptime Widget: type) type {
-    return struct {
-        focus: *Focus,
-        grid: ?Grid,
-        options: Options,
-        content: std.ArrayList(u21),
-        lines: std.ArrayList(Line),
+pub const TextBoxOptions = struct {
+    border_style: ?draw.BorderStyle,
+    rounded_corners: bool = false,
+    wrap_kind: WrapKind,
+    // optional labels rendered over the top and bottom borders.
+    label: []const u8 = "",
+    bottom_label: []const u8 = "",
+};
 
-        const Line = struct {
-            start: usize,
-            end: usize,
-            width: usize,
+pub const TextBox = struct {
+    focus: *Focus,
+    grid: ?Grid,
+    options: TextBoxOptions,
+    content: std.ArrayList(u21),
+    lines: std.ArrayList(Line),
+
+    const Line = struct {
+        start: usize,
+        end: usize,
+        width: usize,
+    };
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        content: []const u8,
+        options: TextBoxOptions,
+    ) !TextBox {
+        var codepoints = try decodeContent(allocator, content);
+        errdefer codepoints.deinit(allocator);
+
+        const focus = try Focus.create(allocator, .text_box);
+
+        return .{
+            .focus = focus,
+            .grid = null,
+            .options = options,
+            .content = codepoints,
+            .lines = .empty,
         };
+    }
 
-        pub const Options = struct {
-            border_style: ?draw.BorderStyle,
-            rounded_corners: bool = false,
-            wrap_kind: WrapKind,
-            // optional labels rendered over the top and bottom borders.
-            label: []const u8 = "",
-            bottom_label: []const u8 = "",
-        };
+    pub fn deinit(self: *TextBox, allocator: std.mem.Allocator) void {
+        self.focus.destroy(allocator);
+        self.clearGrid();
+        self.lines.deinit(allocator);
+        self.content.deinit(allocator);
+    }
 
-        pub fn init(
-            allocator: std.mem.Allocator,
-            content: []const u8,
-            options: Options,
-        ) !TextBox(Widget) {
-            var codepoints = try decodeContent(allocator, content);
-            errdefer codepoints.deinit(allocator);
+    pub fn setContent(self: *TextBox, allocator: std.mem.Allocator, content: []const u8) !void {
+        const codepoints = try decodeContent(allocator, content);
+        self.content.deinit(allocator);
+        self.content = codepoints;
+    }
 
-            const focus = try Focus.create(allocator, .text_box);
-
-            return .{
-                .focus = focus,
-                .grid = null,
-                .options = options,
-                .content = codepoints,
-                .lines = .empty,
-            };
+    pub fn build(self: *TextBox, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
+        self.clearGrid();
+        const border_size: usize = if (self.options.border_style) |_| 1 else 0;
+        if (constraint.max_size.width) |max_width| {
+            if (max_width <= border_size * 2) return;
+        }
+        if (constraint.max_size.height) |max_height| {
+            if (max_height <= border_size * 2) return;
         }
 
-        pub fn deinit(self: *TextBox(Widget), allocator: std.mem.Allocator) void {
-            self.focus.destroy(allocator);
-            self.clearGrid();
-            self.lines.deinit(allocator);
-            self.content.deinit(allocator);
+        const max_inner_width = if (constraint.max_size.width) |width| width - border_size * 2 else null;
+        const wrap_kind: WrapKind = if (max_inner_width == null) .none else self.options.wrap_kind;
+        try self.rebuildLines(allocator, wrap_kind, max_inner_width);
+
+        const focused = root_focus.grandchild_id == self.getFocus().id;
+        const border_style: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
+            .single => if (focused) .double else .single,
+            .single_dashed => if (focused) .double_dashed else .single_dashed,
+            .hidden, .double, .double_dashed => base,
+        } else null;
+
+        const max_lines = if (constraint.max_size.height) |height| height - border_size * 2 else self.lines.items.len;
+        const visible_lines = @min(self.lines.items.len, max_lines);
+
+        var content_width: usize = 0;
+        for (self.lines.items[0..visible_lines]) |line| {
+            const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
+            content_width = @max(content_width, line_width);
         }
 
-        pub fn setContent(self: *TextBox(Widget), allocator: std.mem.Allocator, content: []const u8) !void {
-            const codepoints = try decodeContent(allocator, content);
-            self.content.deinit(allocator);
-            self.content = codepoints;
-        }
+        var width = content_width + border_size * 2;
+        width = @max(width, constraint.min_size.width orelse width);
+        var height = visible_lines + border_size * 2;
+        height = @max(height, constraint.min_size.height orelse height);
 
-        pub fn build(self: *TextBox(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
-            self.clearGrid();
-            const border_size: usize = if (self.options.border_style) |_| 1 else 0;
-            if (constraint.max_size.width) |max_width| {
-                if (max_width <= border_size * 2) return;
-            }
-            if (constraint.max_size.height) |max_height| {
-                if (max_height <= border_size * 2) return;
-            }
-
-            const max_inner_width = if (constraint.max_size.width) |width| width - border_size * 2 else null;
-            const wrap_kind: WrapKind = if (max_inner_width == null) .none else self.options.wrap_kind;
-            try self.rebuildLines(allocator, wrap_kind, max_inner_width);
-
-            const focused = root_focus.grandchild_id == self.getFocus().id;
-            const border_style: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
-                .single => if (focused) .double else .single,
-                .single_dashed => if (focused) .double_dashed else .single_dashed,
-                .hidden, .double, .double_dashed => base,
-            } else null;
-
-            const max_lines = if (constraint.max_size.height) |height| height - border_size * 2 else self.lines.items.len;
-            const visible_lines = @min(self.lines.items.len, max_lines);
-
-            var content_width: usize = 0;
-            for (self.lines.items[0..visible_lines]) |line| {
-                const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
-                content_width = @max(content_width, line_width);
-            }
-
-            var width = content_width + border_size * 2;
-            width = @max(width, constraint.min_size.width orelse width);
-            var height = visible_lines + border_size * 2;
-            height = @max(height, constraint.min_size.height orelse height);
-
-            if (border_size > 0) {
-                const label_width = @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label));
-                if (label_width > 0) {
-                    width = @max(width, label_width + border_size * 2);
-                    if (constraint.max_size.width) |max_width| width = @min(width, max_width);
-                }
-            }
-
-            var grid = try Grid.init(allocator, .{ .width = width, .height = height });
-            errdefer grid.deinit();
-
-            for (self.lines.items[0..visible_lines], 0..) |line, y| {
-                const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
-                var x: usize = 0;
-                for (self.content.items[line.start..line.end]) |codepoint| {
-                    const rune_width = wth.cellWidth(codepoint);
-                    if (x + rune_width > line_width) break;
-                    try grid.setRune(x + border_size, y + border_size, codepoint);
-                    x += rune_width;
-                }
-            }
-
-            self.focus.clear();
-            if (border_style) |style| {
-                try draw.border(&grid, style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
-            }
-
-            self.grid = grid;
-            if (root_focus == self.getFocus()) root_focus.refocus();
-        }
-
-        pub fn input(self: *TextBox(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
-            _ = self;
-            _ = allocator;
-            _ = key;
-            _ = root_focus;
-        }
-
-        pub fn clearGrid(self: *TextBox(Widget)) void {
-            if (self.grid) |*grid| {
-                grid.deinit();
-                self.grid = null;
+        if (border_size > 0) {
+            const label_width = @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label));
+            if (label_width > 0) {
+                width = @max(width, label_width + border_size * 2);
+                if (constraint.max_size.width) |max_width| width = @min(width, max_width);
             }
         }
 
-        pub fn getGrid(self: TextBox(Widget)) ?Grid {
-            return self.grid;
-        }
+        var grid = try Grid.init(allocator, .{ .width = width, .height = height });
+        errdefer grid.deinit();
 
-        pub fn getFocus(self: *TextBox(Widget)) *Focus {
-            return self.focus;
-        }
-
-        fn decodeContent(allocator: std.mem.Allocator, content: []const u8) !std.ArrayList(u21) {
-            var codepoints: std.ArrayList(u21) = .empty;
-            errdefer codepoints.deinit(allocator);
-            var utf8 = (try std.unicode.Utf8View.init(content)).iterator();
-            while (utf8.nextCodepoint()) |codepoint| {
-                try codepoints.append(allocator, codepoint);
-            }
-            return codepoints;
-        }
-
-        fn rebuildLines(self: *TextBox(Widget), allocator: std.mem.Allocator, wrap_kind: WrapKind, max_width: ?usize) !void {
-            self.lines.clearRetainingCapacity();
-            switch (wrap_kind) {
-                .none => try self.wrapChars(allocator, null),
-                .char => try self.wrapChars(allocator, max_width.?),
-                .word => try self.wrapWords(allocator, max_width.?),
-            }
-        }
-
-        fn wrapChars(self: *TextBox(Widget), allocator: std.mem.Allocator, max_width: ?usize) !void {
-            var start: usize = 0;
-            var width: usize = 0;
-            for (self.content.items, 0..) |codepoint, i| {
-                if (codepoint == '\n') {
-                    try self.appendLine(allocator, start, i, width);
-                    start = i + 1;
-                    width = 0;
-                    continue;
-                }
-
+        for (self.lines.items[0..visible_lines], 0..) |line, y| {
+            const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
+            var x: usize = 0;
+            for (self.content.items[line.start..line.end]) |codepoint| {
                 const rune_width = wth.cellWidth(codepoint);
-                if (max_width) |limit| {
-                    if (width > 0 and width + rune_width > limit) {
-                        try self.appendLine(allocator, start, i, width);
-                        start = i;
-                        width = 0;
-                    }
-                }
-                width += rune_width;
+                if (x + rune_width > line_width) break;
+                try grid.setRune(x + border_size, y + border_size, codepoint);
+                x += rune_width;
             }
-            try self.appendLine(allocator, start, self.content.items.len, width);
         }
 
-        fn wrapWords(self: *TextBox(Widget), allocator: std.mem.Allocator, max_width: usize) !void {
-            var line_start: usize = 0;
-            var line_end: usize = 0;
-            var line_width: usize = 0;
-            var i: usize = 0;
+        self.focus.clear();
+        if (border_style) |style| {
+            try draw.border(&grid, style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+        }
 
-            while (i < self.content.items.len) {
-                const codepoint = self.content.items[i];
-                if (codepoint == '\n') {
-                    try self.appendLine(allocator, line_start, line_end, line_width);
-                    i += 1;
-                    line_start = i;
-                    line_end = i;
-                    line_width = 0;
-                    continue;
-                }
+        self.grid = grid;
+        if (root_focus == self.getFocus()) root_focus.refocus();
+    }
 
-                if (codepoint == ' ' or codepoint == '\t') {
-                    if (line_width > 0 and line_width < max_width) {
-                        line_end = i + 1;
-                        line_width += 1;
-                    } else if (line_width == 0) {
-                        line_start = i + 1;
-                        line_end = i + 1;
-                    }
-                    i += 1;
-                    continue;
-                }
+    pub fn input(self: *TextBox, allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
+        _ = self;
+        _ = allocator;
+        _ = key;
+        _ = root_focus;
+    }
 
-                const word_start = i;
-                var word_width: usize = 0;
-                while (i < self.content.items.len) : (i += 1) {
-                    const current = self.content.items[i];
-                    if (current == '\n' or current == ' ' or current == '\t') break;
-                    word_width += wth.cellWidth(current);
-                }
-                const word_end = i;
+    pub fn clearGrid(self: *TextBox) void {
+        if (self.grid) |*grid| {
+            grid.deinit();
+            self.grid = null;
+        }
+    }
 
-                if (line_width + word_width <= max_width) {
-                    if (line_width == 0) line_start = word_start;
-                    line_end = word_end;
-                    line_width += word_width;
-                } else if (word_width <= max_width) {
-                    if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
-                    line_start = word_start;
-                    line_end = word_end;
-                    line_width = word_width;
-                } else {
-                    if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
-                    var segment_start = word_start;
-                    var segment_width: usize = 0;
-                    for (self.content.items[word_start..word_end], word_start..) |current, index| {
-                        const rune_width = wth.cellWidth(current);
-                        if (segment_width > 0 and segment_width + rune_width > max_width) {
-                            try self.appendLine(allocator, segment_start, index, segment_width);
-                            segment_start = index;
-                            segment_width = 0;
-                        }
-                        segment_width += rune_width;
-                    }
-                    line_start = segment_start;
-                    line_end = word_end;
-                    line_width = segment_width;
-                }
+    pub fn getGrid(self: TextBox) ?Grid {
+        return self.grid;
+    }
+
+    pub fn getFocus(self: *TextBox) *Focus {
+        return self.focus;
+    }
+
+    fn decodeContent(allocator: std.mem.Allocator, content: []const u8) !std.ArrayList(u21) {
+        var codepoints: std.ArrayList(u21) = .empty;
+        errdefer codepoints.deinit(allocator);
+        var utf8 = (try std.unicode.Utf8View.init(content)).iterator();
+        while (utf8.nextCodepoint()) |codepoint| {
+            try codepoints.append(allocator, codepoint);
+        }
+        return codepoints;
+    }
+
+    fn rebuildLines(self: *TextBox, allocator: std.mem.Allocator, wrap_kind: WrapKind, max_width: ?usize) !void {
+        self.lines.clearRetainingCapacity();
+        switch (wrap_kind) {
+            .none => try self.wrapChars(allocator, null),
+            .char => try self.wrapChars(allocator, max_width.?),
+            .word => try self.wrapWords(allocator, max_width.?),
+        }
+    }
+
+    fn wrapChars(self: *TextBox, allocator: std.mem.Allocator, max_width: ?usize) !void {
+        var start: usize = 0;
+        var width: usize = 0;
+        for (self.content.items, 0..) |codepoint, i| {
+            if (codepoint == '\n') {
+                try self.appendLine(allocator, start, i, width);
+                start = i + 1;
+                width = 0;
+                continue;
             }
 
-            try self.appendLine(allocator, line_start, line_end, line_width);
+            const rune_width = wth.cellWidth(codepoint);
+            if (max_width) |limit| {
+                if (width > 0 and width + rune_width > limit) {
+                    try self.appendLine(allocator, start, i, width);
+                    start = i;
+                    width = 0;
+                }
+            }
+            width += rune_width;
+        }
+        try self.appendLine(allocator, start, self.content.items.len, width);
+    }
+
+    fn wrapWords(self: *TextBox, allocator: std.mem.Allocator, max_width: usize) !void {
+        var line_start: usize = 0;
+        var line_end: usize = 0;
+        var line_width: usize = 0;
+        var i: usize = 0;
+
+        while (i < self.content.items.len) {
+            const codepoint = self.content.items[i];
+            if (codepoint == '\n') {
+                try self.appendLine(allocator, line_start, line_end, line_width);
+                i += 1;
+                line_start = i;
+                line_end = i;
+                line_width = 0;
+                continue;
+            }
+
+            if (codepoint == ' ' or codepoint == '\t') {
+                if (line_width > 0 and line_width < max_width) {
+                    line_end = i + 1;
+                    line_width += 1;
+                } else if (line_width == 0) {
+                    line_start = i + 1;
+                    line_end = i + 1;
+                }
+                i += 1;
+                continue;
+            }
+
+            const word_start = i;
+            var word_width: usize = 0;
+            while (i < self.content.items.len) : (i += 1) {
+                const current = self.content.items[i];
+                if (current == '\n' or current == ' ' or current == '\t') break;
+                word_width += wth.cellWidth(current);
+            }
+            const word_end = i;
+
+            if (line_width + word_width <= max_width) {
+                if (line_width == 0) line_start = word_start;
+                line_end = word_end;
+                line_width += word_width;
+            } else if (word_width <= max_width) {
+                if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
+                line_start = word_start;
+                line_end = word_end;
+                line_width = word_width;
+            } else {
+                if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
+                var segment_start = word_start;
+                var segment_width: usize = 0;
+                for (self.content.items[word_start..word_end], word_start..) |current, index| {
+                    const rune_width = wth.cellWidth(current);
+                    if (segment_width > 0 and segment_width + rune_width > max_width) {
+                        try self.appendLine(allocator, segment_start, index, segment_width);
+                        segment_start = index;
+                        segment_width = 0;
+                    }
+                    segment_width += rune_width;
+                }
+                line_start = segment_start;
+                line_end = word_end;
+                line_width = segment_width;
+            }
         }
 
-        fn appendLine(self: *TextBox(Widget), allocator: std.mem.Allocator, start: usize, end: usize, width: usize) !void {
-            try self.lines.append(allocator, .{ .start = start, .end = end, .width = width });
+        try self.appendLine(allocator, line_start, line_end, line_width);
+    }
+
+    fn appendLine(self: *TextBox, allocator: std.mem.Allocator, start: usize, end: usize, width: usize) !void {
+        try self.lines.append(allocator, .{ .start = start, .end = end, .width = width });
+    }
+};
+
+pub const TextInputOptions = struct {
+    border_style: ?draw.BorderStyle = .single_dashed,
+    rounded_corners: bool = false,
+    // visible width in codepoints, excluding the border (null = fill
+    // the available width)
+    visible_width: ?usize = 20,
+    // when true, every character is rendered as a bullet so the
+    // actual content isn't visible on screen
+    password: bool = false,
+    // optional labels rendered over the top and bottom borders. when
+    // empty, that border is drawn unchanged.
+    label: []const u8 = "",
+    bottom_label: []const u8 = "",
+    // optional form-field name; the web renderer emits it as the
+    // HTML `name` attribute so the value is submitted with that key.
+    name: []const u8 = "",
+    // prevent changes to the content while retaining cursor navigation
+    read_only: bool = false,
+    // when false, the content (and cursor) aren't drawn into the grid
+    render_content: bool = true,
+    // edit multiple lines: enter inserts a newline, long lines soft
+    // word-wrap, and the height grows with the content
+    multiline: bool = false,
+    // content rows shown, fixed: shorter content leaves blank rows,
+    // longer content scrolls (null = grow with the content, bounded
+    // only by the constraint)
+    visible_height: ?usize = null,
+    // options for multiline scrolling; only fill, show_bar, and
+    // web_native are honored
+    scroll: ScrollOptions = .{},
+};
+
+pub const TextInput = struct {
+    focus: *Focus,
+    grid: ?Grid,
+    content: std.ArrayList(u21),
+    cursor: usize,
+    scroll_offset: usize,
+    options: TextInputOptions,
+    // multiline state: content index where each visual row starts, the
+    // first displayed row, and the wrap width of the last build (so input
+    // can recompute the rows between builds)
+    row_starts: std.ArrayList(usize),
+    row_offset: usize,
+    last_wrap_width: ?usize,
+
+    pub fn init(allocator: std.mem.Allocator, options: TextInputOptions) !TextInput {
+        return .{
+            .focus = try Focus.create(allocator, if (options.password)
+                .text_input_password
+            else if (options.multiline)
+                .text_area
+            else
+                .text_input),
+            .grid = null,
+            .content = .empty,
+            .cursor = 0,
+            .scroll_offset = 0,
+            .options = options,
+            .row_starts = .empty,
+            .row_offset = 0,
+            .last_wrap_width = null,
+        };
+    }
+
+    pub fn deinit(self: *TextInput, allocator: std.mem.Allocator) void {
+        self.focus.destroy(allocator);
+        self.clearGrid();
+        self.content.deinit(allocator);
+        self.row_starts.deinit(allocator);
+    }
+
+    // replace all typed content at once. cursor lands at the end so
+    // subsequent edits (or rendering) treat it as the new state.
+    pub fn setContent(self: *TextInput, allocator: std.mem.Allocator, bytes: []const u8) !void {
+        var content: std.ArrayList(u21) = .empty;
+        errdefer content.deinit(allocator);
+        var utf8 = (try std.unicode.Utf8View.init(bytes)).iterator();
+        while (utf8.nextCodepoint()) |cp| {
+            try content.append(allocator, cp);
         }
-    };
-}
 
-pub fn TextInput(comptime Widget: type) type {
-    return struct {
-        focus: *Focus,
-        grid: ?Grid,
-        content: std.ArrayList(u21),
-        cursor: usize,
-        scroll_offset: usize,
-        options: Options,
-        // multiline state: content index where each visual row starts, the
-        // first displayed row, and the wrap width of the last build (so input
-        // can recompute the rows between builds)
-        row_starts: std.ArrayList(usize),
-        row_offset: usize,
-        last_wrap_width: ?usize,
+        self.content.deinit(allocator);
+        self.content = content;
+        self.cursor = self.content.items.len;
+        self.scroll_offset = 0;
+        self.row_offset = 0;
+    }
 
-        pub const Options = struct {
-            border_style: ?draw.BorderStyle = .single_dashed,
-            rounded_corners: bool = false,
-            // visible width in codepoints, excluding the border (null = fill
-            // the available width)
-            visible_width: ?usize = 20,
-            // when true, every character is rendered as a bullet so the
-            // actual content isn't visible on screen
-            password: bool = false,
-            // optional labels rendered over the top and bottom borders. when
-            // empty, that border is drawn unchanged.
-            label: []const u8 = "",
-            bottom_label: []const u8 = "",
-            // optional form-field name; the web renderer emits it as the
-            // HTML `name` attribute so the value is submitted with that key.
-            name: []const u8 = "",
-            // prevent changes to the content while retaining cursor navigation
-            read_only: bool = false,
-            // when false, the content (and cursor) aren't drawn into the grid
-            render_content: bool = true,
-            // edit multiple lines: enter inserts a newline, long lines soft
-            // word-wrap, and the height grows with the content
-            multiline: bool = false,
-            // content rows shown, fixed: shorter content leaves blank rows,
-            // longer content scrolls (null = grow with the content, bounded
-            // only by the constraint)
-            visible_height: ?usize = null,
-            // options for multiline scrolling; only fill, show_bar, and
-            // web_native are honored
-            scroll: Scroll(Widget).Options = .{},
+    pub fn clear(self: *TextInput, allocator: std.mem.Allocator) void {
+        self.content.clearAndFree(allocator);
+        self.cursor = 0;
+        self.scroll_offset = 0;
+        self.row_offset = 0;
+    }
+
+    // encode the stored codepoints into a single owned utf-8 buffer
+    pub fn text(self: *const TextInput, allocator: std.mem.Allocator) ![]u8 {
+        var text_buffer: std.ArrayList(u8) = .empty;
+        errdefer text_buffer.deinit(allocator);
+        for (self.content.items) |cp| {
+            var encoded: [4]u8 = undefined;
+            const len = try std.unicode.utf8Encode(cp, &encoded);
+            try text_buffer.appendSlice(allocator, encoded[0..len]);
+        }
+        return text_buffer.toOwnedSlice(allocator);
+    }
+
+    // display columns the codepoint at content index i occupies on
+    // screen. password mode renders a bullet regardless of the hidden
+    // codepoint, so everything is one column there.
+    fn contentCellWidth(self: *const TextInput, i: usize) usize {
+        if (self.options.password) return 1;
+        return wth.cellWidth(self.content.items[i]);
+    }
+
+    // display columns of the content range [start, end)
+    fn columnsBetween(self: *const TextInput, start: usize, end: usize) usize {
+        var total: usize = 0;
+        for (start..end) |i| total += self.contentCellWidth(i);
+        return total;
+    }
+
+    // rebuild row_starts: the content index where each visual row begins.
+    // rows break on "\n" (kept in the row, stripped for display) and soft
+    // word-wrap at wrap_width display columns, so every index lands in
+    // exactly one row.
+    fn computeRowStarts(self: *TextInput, allocator: std.mem.Allocator, wrap_width: usize) !void {
+        self.row_starts.clearRetainingCapacity();
+        try self.row_starts.append(allocator, 0);
+        var col: usize = 0;
+        var last_space: ?usize = null;
+        for (self.content.items, 0..) |cp, i| {
+            if (cp == '\n') {
+                try self.row_starts.append(allocator, i + 1);
+                col = 0;
+                last_space = null;
+                continue;
+            }
+            const w = self.contentCellWidth(i);
+            // an overflowing space stays put as trailing whitespace
+            // instead of opening a row of its own; the next word breaks
+            const is_space = cp == ' ';
+            if (!is_space and col > 0 and col + w > wrap_width) {
+                // break after the row's last space if it has one,
+                // otherwise char-wrap
+                const start = if (last_space) |space| space + 1 else i;
+                try self.row_starts.append(allocator, start);
+                col = self.columnsBetween(start, i);
+                last_space = null;
+            }
+            if (is_space) last_space = i;
+            col += w;
+        }
+    }
+
+    // the cursor's visual row and its codepoint offset within that row.
+    // offset is an index distance, not a screen column — columnsBetween
+    // converts it when drawing.
+    fn cursorRowCol(self: *const TextInput) struct { row: usize, offset: usize } {
+        var row = self.row_starts.items.len - 1;
+        while (self.row_starts.items[row] > self.cursor) row -= 1;
+        return .{ .row = row, .offset = self.cursor - self.row_starts.items[row] };
+    }
+
+    // the largest cursor index on the row: its "\n" (or last soft-wrapped
+    // char) when another row follows, else the end of the content
+    fn rowMaxIndex(self: *const TextInput, row: usize) usize {
+        return if (row + 1 < self.row_starts.items.len)
+            self.row_starts.items[row + 1] - 1
+        else
+            self.content.items.len;
+    }
+
+    // for parents routing arrow keys: whether up/down has a row to move
+    // to, or should move focus out of the input instead
+    pub fn cursorOnFirstRow(self: *TextInput, allocator: std.mem.Allocator) !bool {
+        if (!self.options.multiline) return true;
+        const wrap_width = self.last_wrap_width orelse return true;
+        try self.computeRowStarts(allocator, wrap_width);
+        return self.cursorRowCol().row == 0;
+    }
+
+    pub fn cursorOnLastRow(self: *TextInput, allocator: std.mem.Allocator) !bool {
+        if (!self.options.multiline) return true;
+        const wrap_width = self.last_wrap_width orelse return true;
+        try self.computeRowStarts(allocator, wrap_width);
+        return self.cursorRowCol().row == self.row_starts.items.len - 1;
+    }
+
+    pub fn build(self: *TextInput, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
+        self.clearGrid();
+
+        const effective_border: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
+            .hidden => .hidden,
+            else => if (root_focus.grandchild_id == self.focus.id) .double_dashed else .single_dashed,
+        } else null;
+
+        const border_size: usize = if (effective_border) |_| 1 else 0;
+        const height: usize = 1 + border_size * 2;
+
+        // width is fixed at the option's visible_width (longer content
+        // scrolls horizontally inside it), or fills the constraint. an
+        // unbounded fill has no width to take, so it renders nothing.
+        const width: usize = blk: {
+            const visible_width = self.options.visible_width orelse break :blk constraint.max_size.width orelse return;
+            // widen for the labels so they stay visible between the corners
+            const label_min = if (border_size > 0)
+                @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label))
+            else
+                0;
+            const desired_width = @max(visible_width, label_min) + border_size * 2;
+            break :blk if (constraint.max_size.width) |max_width|
+                @min(desired_width, max_width)
+            else
+                desired_width;
         };
 
-        pub fn init(allocator: std.mem.Allocator, options: Options) !TextInput(Widget) {
-            return .{
-                .focus = try Focus.create(allocator, if (options.password)
-                    .text_input_password
-                else if (options.multiline)
-                    .text_area
-                else
-                    .text_input),
-                .grid = null,
-                .content = .empty,
-                .cursor = 0,
-                .scroll_offset = 0,
-                .options = options,
-                .row_starts = .empty,
-                .row_offset = 0,
-                .last_wrap_width = null,
-            };
+        if (width <= border_size * 2) return;
+
+        const inner_width = width - border_size * 2;
+
+        if (self.options.multiline) {
+            try self.buildMultiline(allocator, constraint, root_focus, effective_border, width, inner_width);
+            return;
         }
 
-        pub fn deinit(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
-            self.focus.destroy(allocator);
-            self.clearGrid();
-            self.content.deinit(allocator);
-            self.row_starts.deinit(allocator);
-        }
-
-        // replace all typed content at once. cursor lands at the end so
-        // subsequent edits (or rendering) treat it as the new state.
-        pub fn setContent(self: *TextInput(Widget), allocator: std.mem.Allocator, bytes: []const u8) !void {
-            var content: std.ArrayList(u21) = .empty;
-            errdefer content.deinit(allocator);
-            var utf8 = (try std.unicode.Utf8View.init(bytes)).iterator();
-            while (utf8.nextCodepoint()) |cp| {
-                try content.append(allocator, cp);
+        // keep the cursor inside the visible window, measured in display
+        // columns (a wide rune fills two)
+        if (self.cursor < self.scroll_offset) {
+            self.scroll_offset = self.cursor;
+        } else {
+            // the cursor's own cell: a content rune, or one trailing
+            // space column when it sits past the end. the window can
+            // land at most on the cursor itself — a wide cursor rune in
+            // a one-column window just doesn't render.
+            const cursor_w: usize = if (self.cursor < self.content.items.len) self.contentCellWidth(self.cursor) else 1;
+            while (self.scroll_offset < self.cursor and
+                self.columnsBetween(self.scroll_offset, self.cursor) + cursor_w > inner_width)
+            {
+                self.scroll_offset += 1;
             }
-
-            self.content.deinit(allocator);
-            self.content = content;
-            self.cursor = self.content.items.len;
-            self.scroll_offset = 0;
-            self.row_offset = 0;
         }
 
-        pub fn clear(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
-            self.content.clearAndFree(allocator);
-            self.cursor = 0;
-            self.scroll_offset = 0;
-            self.row_offset = 0;
-        }
+        var grid = try Grid.init(allocator, .{ .width = width, .height = height });
+        errdefer grid.deinit();
 
-        // encode the stored codepoints into a single owned utf-8 buffer
-        pub fn text(self: *const TextInput(Widget), allocator: std.mem.Allocator) ![]u8 {
-            var text_buffer: std.ArrayList(u8) = .empty;
-            errdefer text_buffer.deinit(allocator);
-            for (self.content.items) |cp| {
-                var encoded: [4]u8 = undefined;
-                const len = try std.unicode.utf8Encode(cp, &encoded);
-                try text_buffer.appendSlice(allocator, encoded[0..len]);
-            }
-            return text_buffer.toOwnedSlice(allocator);
-        }
+        const has_focus = root_focus.grandchild_id == self.focus.id;
 
-        // display columns the codepoint at content index i occupies on
-        // screen. password mode renders a bullet regardless of the hidden
-        // codepoint, so everything is one column there.
-        fn contentCellWidth(self: *const TextInput(Widget), i: usize) usize {
-            if (self.options.password) return 1;
-            return wth.cellWidth(self.content.items[i]);
-        }
-
-        // display columns of the content range [start, end)
-        fn columnsBetween(self: *const TextInput(Widget), start: usize, end: usize) usize {
-            var total: usize = 0;
-            for (start..end) |i| total += self.contentCellWidth(i);
-            return total;
-        }
-
-        // rebuild row_starts: the content index where each visual row begins.
-        // rows break on "\n" (kept in the row, stripped for display) and soft
-        // word-wrap at wrap_width display columns, so every index lands in
-        // exactly one row.
-        fn computeRowStarts(self: *TextInput(Widget), allocator: std.mem.Allocator, wrap_width: usize) !void {
-            self.row_starts.clearRetainingCapacity();
-            try self.row_starts.append(allocator, 0);
+        // text + cursor (skipped when an external overlay owns the display)
+        if (self.options.render_content) {
             var col: usize = 0;
-            var last_space: ?usize = null;
-            for (self.content.items, 0..) |cp, i| {
-                if (cp == '\n') {
-                    try self.row_starts.append(allocator, i + 1);
-                    col = 0;
-                    last_space = null;
-                    continue;
+            var content_index = self.scroll_offset;
+            const cell_y = border_size;
+            while (col < inner_width) {
+                const cell_x = col + border_size;
+                if (content_index < self.content.items.len) {
+                    const w = self.contentCellWidth(content_index);
+                    // a wide rune that doesn't fit the last column is
+                    // left undrawn
+                    if (col + w > inner_width) break;
+                    try grid.setRune(cell_x, cell_y, if (self.options.password) '•' else self.content.items[content_index]);
+                    if (content_index == self.cursor and has_focus) {
+                        (try grid.cell(cell_x, cell_y)).style.inverted = true;
+                    }
+                    col += w;
+                    content_index += 1;
+                } else {
+                    if (self.cursor == content_index and has_focus) {
+                        // cursor sits past the last char — paint a space underneath
+                        try grid.setRune(cell_x, cell_y, ' ');
+                        (try grid.cell(cell_x, cell_y)).style.inverted = true;
+                    }
+                    break;
                 }
-                const w = self.contentCellWidth(i);
-                // an overflowing space stays put as trailing whitespace
-                // instead of opening a row of its own; the next word breaks
-                const is_space = cp == ' ';
-                if (!is_space and col > 0 and col + w > wrap_width) {
-                    // break after the row's last space if it has one,
-                    // otherwise char-wrap
-                    const start = if (last_space) |space| space + 1 else i;
-                    try self.row_starts.append(allocator, start);
-                    col = self.columnsBetween(start, i);
-                    last_space = null;
-                }
-                if (is_space) last_space = i;
-                col += w;
             }
         }
 
-        // the cursor's visual row and its codepoint offset within that row.
-        // offset is an index distance, not a screen column — columnsBetween
-        // converts it when drawing.
-        fn cursorRowCol(self: *const TextInput(Widget)) struct { row: usize, offset: usize } {
-            var row = self.row_starts.items.len - 1;
-            while (self.row_starts.items[row] > self.cursor) row -= 1;
-            return .{ .row = row, .offset = self.cursor - self.row_starts.items[row] };
+        // border
+        if (effective_border) |border_style| {
+            try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
         }
 
-        // the largest cursor index on the row: its "\n" (or last soft-wrapped
-        // char) when another row follows, else the end of the content
-        fn rowMaxIndex(self: *const TextInput(Widget), row: usize) usize {
-            return if (row + 1 < self.row_starts.items.len)
-                self.row_starts.items[row + 1] - 1
-            else
-                self.content.items.len;
+        self.grid = grid;
+    }
+
+    fn viewportRows(self: *const TextInput, rows: usize, avail_rows: ?usize) usize {
+        if (self.options.scroll.fill) {
+            if (avail_rows) |available| return available;
+        }
+        const wanted = if (self.options.visible_height) |v| @max(1, v) else rows;
+        return @min(wanted, avail_rows orelse wanted);
+    }
+
+    fn buildMultiline(self: *TextInput, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus, effective_border: ?draw.BorderStyle, width: usize, inner_width: usize) !void {
+        const border_size: usize = if (effective_border) |_| 1 else 0;
+
+        // rows the constraint allows; null = unbounded. A bounded height
+        // that cannot fit the borders and one content row renders nothing,
+        // matching the other widgets' zero-budget behavior.
+        const avail_rows: ?usize = if (constraint.max_size.height) |max_height|
+            max_height -| border_size * 2
+        else
+            null;
+        if (avail_rows) |available| {
+            if (available == 0) return;
         }
 
-        // for parents routing arrow keys: whether up/down has a row to move
-        // to, or should move focus out of the input instead
-        pub fn cursorOnFirstRow(self: *TextInput(Widget), allocator: std.mem.Allocator) !bool {
-            if (!self.options.multiline) return true;
-            const wrap_width = self.last_wrap_width orelse return true;
+        // one column is reserved so the caret can sit past a full row;
+        // when the rows overflow, another goes to the scroll bar (which
+        // only adds rows, so the bar decision can't flip back)
+        var bar: usize = 0;
+        var wrap_width = @max(1, inner_width -| 1);
+        try self.computeRowStarts(allocator, wrap_width);
+        var rows = self.row_starts.items.len;
+        var vp_h = self.viewportRows(rows, avail_rows);
+        if (rows > vp_h and self.options.scroll.show_bar and !self.options.scroll.web_native) {
+            bar = 1;
+            wrap_width = @max(1, inner_width -| 2);
             try self.computeRowStarts(allocator, wrap_width);
-            return self.cursorRowCol().row == 0;
+            rows = self.row_starts.items.len;
+            vp_h = self.viewportRows(rows, avail_rows);
         }
+        self.last_wrap_width = wrap_width;
 
-        pub fn cursorOnLastRow(self: *TextInput(Widget), allocator: std.mem.Allocator) !bool {
-            if (!self.options.multiline) return true;
-            const wrap_width = self.last_wrap_width orelse return true;
-            try self.computeRowStarts(allocator, wrap_width);
-            return self.cursorRowCol().row == self.row_starts.items.len - 1;
+        // keep the cursor's row inside the visible window
+        const rc = self.cursorRowCol();
+        if (rc.row < self.row_offset) {
+            self.row_offset = rc.row;
+        } else if (rc.row >= self.row_offset + vp_h) {
+            self.row_offset = rc.row + 1 - vp_h;
         }
+        self.row_offset = @min(self.row_offset, rows -| vp_h);
 
-        pub fn build(self: *TextInput(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
-            self.clearGrid();
+        var grid = try Grid.init(allocator, .{ .width = width, .height = vp_h + border_size * 2 });
+        errdefer grid.deinit();
 
-            const effective_border: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
-                .hidden => .hidden,
-                else => if (root_focus.grandchild_id == self.focus.id) .double_dashed else .single_dashed,
-            } else null;
+        const has_focus = root_focus.grandchild_id == self.focus.id;
 
-            const border_size: usize = if (effective_border) |_| 1 else 0;
-            const height: usize = 1 + border_size * 2;
-
-            // width is fixed at the option's visible_width (longer content
-            // scrolls horizontally inside it), or fills the constraint. an
-            // unbounded fill has no width to take, so it renders nothing.
-            const width: usize = blk: {
-                const visible_width = self.options.visible_width orelse break :blk constraint.max_size.width orelse return;
-                // widen for the labels so they stay visible between the corners
-                const label_min = if (border_size > 0)
-                    @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label))
-                else
-                    0;
-                const desired_width = @max(visible_width, label_min) + border_size * 2;
-                break :blk if (constraint.max_size.width) |max_width|
-                    @min(desired_width, max_width)
-                else
-                    desired_width;
-            };
-
-            if (width <= border_size * 2) return;
-
-            const inner_width = width - border_size * 2;
-
-            if (self.options.multiline) {
-                try self.buildMultiline(allocator, constraint, root_focus, effective_border, width, inner_width);
-                return;
-            }
-
-            // keep the cursor inside the visible window, measured in display
-            // columns (a wide rune fills two)
-            if (self.cursor < self.scroll_offset) {
-                self.scroll_offset = self.cursor;
-            } else {
-                // the cursor's own cell: a content rune, or one trailing
-                // space column when it sits past the end. the window can
-                // land at most on the cursor itself — a wide cursor rune in
-                // a one-column window just doesn't render.
-                const cursor_w: usize = if (self.cursor < self.content.items.len) self.contentCellWidth(self.cursor) else 1;
-                while (self.scroll_offset < self.cursor and
-                    self.columnsBetween(self.scroll_offset, self.cursor) + cursor_w > inner_width)
-                {
-                    self.scroll_offset += 1;
-                }
-            }
-
-            var grid = try Grid.init(allocator, .{ .width = width, .height = height });
-            errdefer grid.deinit();
-
-            const has_focus = root_focus.grandchild_id == self.focus.id;
-
-            // text + cursor (skipped when an external overlay owns the display)
-            if (self.options.render_content) {
+        // rows + cursor (skipped when an external overlay owns the display)
+        if (self.options.render_content) {
+            const content_width = inner_width - bar;
+            for (0..vp_h) |view_row| {
+                const row = self.row_offset + view_row;
+                if (row >= rows) break;
+                const start = self.row_starts.items[row];
+                var end = if (row + 1 < rows) self.row_starts.items[row + 1] else self.content.items.len;
+                if (end > start and self.content.items[end - 1] == '\n') end -= 1;
                 var col: usize = 0;
-                var content_index = self.scroll_offset;
-                const cell_y = border_size;
-                while (col < inner_width) {
-                    const cell_x = col + border_size;
-                    if (content_index < self.content.items.len) {
-                        const w = self.contentCellWidth(content_index);
-                        // a wide rune that doesn't fit the last column is
-                        // left undrawn
-                        if (col + w > inner_width) break;
-                        try grid.setRune(cell_x, cell_y, if (self.options.password) '•' else self.content.items[content_index]);
-                        if (content_index == self.cursor and has_focus) {
-                            (try grid.cell(cell_x, cell_y)).style.inverted = true;
-                        }
-                        col += w;
-                        content_index += 1;
-                    } else {
-                        if (self.cursor == content_index and has_focus) {
-                            // cursor sits past the last char — paint a space underneath
-                            try grid.setRune(cell_x, cell_y, ' ');
-                            (try grid.cell(cell_x, cell_y)).style.inverted = true;
-                        }
-                        break;
-                    }
+                for (start..end) |i| {
+                    const w = self.contentCellWidth(i);
+                    if (col + w > content_width) break;
+                    try grid.setRune(border_size + col, border_size + view_row, if (self.options.password) '•' else self.content.items[i]);
+                    col += w;
                 }
             }
 
-            // border
-            if (effective_border) |border_style| {
-                try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+            if (has_focus) {
+                // the cursor's screen column within its row (its offset
+                // counts codepoints, so convert to display columns)
+                const cur_col = self.columnsBetween(self.row_starts.items[rc.row], self.cursor);
+                if (cur_col < inner_width - bar) {
+                    const view_row = rc.row - self.row_offset;
+                    const cursor_cell = try grid.cell(border_size + cur_col, border_size + view_row);
+                    if (cursor_cell.rune == null and !cursor_cell.continuation) {
+                        try grid.setRune(border_size + cur_col, border_size + view_row, ' ');
+                    }
+                    cursor_cell.style.inverted = true;
+                }
             }
 
-            self.grid = grid;
+            if (bar == 1) {
+                try draw.scrollBarVert(&grid, border_size + inner_width - 1, border_size, vp_h, rows, vp_h, @intCast(self.row_offset));
+            }
         }
 
-        fn viewportRows(self: *const TextInput(Widget), rows: usize, avail_rows: ?usize) usize {
-            if (self.options.scroll.fill) {
-                if (avail_rows) |available| return available;
-            }
-            const wanted = if (self.options.visible_height) |v| @max(1, v) else rows;
-            return @min(wanted, avail_rows orelse wanted);
+        if (effective_border) |border_style| {
+            try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
         }
 
-        fn buildMultiline(self: *TextInput(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus, effective_border: ?draw.BorderStyle, width: usize, inner_width: usize) !void {
-            const border_size: usize = if (effective_border) |_| 1 else 0;
+        self.grid = grid;
+    }
 
-            // rows the constraint allows; null = unbounded. A bounded height
-            // that cannot fit the borders and one content row renders nothing,
-            // matching the other widgets' zero-budget behavior.
-            const avail_rows: ?usize = if (constraint.max_size.height) |max_height|
-                max_height -| border_size * 2
-            else
-                null;
-            if (avail_rows) |available| {
-                if (available == 0) return;
-            }
-
-            // one column is reserved so the caret can sit past a full row;
-            // when the rows overflow, another goes to the scroll bar (which
-            // only adds rows, so the bar decision can't flip back)
-            var bar: usize = 0;
-            var wrap_width = @max(1, inner_width -| 1);
-            try self.computeRowStarts(allocator, wrap_width);
-            var rows = self.row_starts.items.len;
-            var vp_h = self.viewportRows(rows, avail_rows);
-            if (rows > vp_h and self.options.scroll.show_bar and !self.options.scroll.web_native) {
-                bar = 1;
-                wrap_width = @max(1, inner_width -| 2);
-                try self.computeRowStarts(allocator, wrap_width);
-                rows = self.row_starts.items.len;
-                vp_h = self.viewportRows(rows, avail_rows);
-            }
-            self.last_wrap_width = wrap_width;
-
-            // keep the cursor's row inside the visible window
-            const rc = self.cursorRowCol();
-            if (rc.row < self.row_offset) {
-                self.row_offset = rc.row;
-            } else if (rc.row >= self.row_offset + vp_h) {
-                self.row_offset = rc.row + 1 - vp_h;
-            }
-            self.row_offset = @min(self.row_offset, rows -| vp_h);
-
-            var grid = try Grid.init(allocator, .{ .width = width, .height = vp_h + border_size * 2 });
-            errdefer grid.deinit();
-
-            const has_focus = root_focus.grandchild_id == self.focus.id;
-
-            // rows + cursor (skipped when an external overlay owns the display)
-            if (self.options.render_content) {
-                const content_width = inner_width - bar;
-                for (0..vp_h) |view_row| {
-                    const row = self.row_offset + view_row;
-                    if (row >= rows) break;
-                    const start = self.row_starts.items[row];
-                    var end = if (row + 1 < rows) self.row_starts.items[row + 1] else self.content.items.len;
-                    if (end > start and self.content.items[end - 1] == '\n') end -= 1;
-                    var col: usize = 0;
-                    for (start..end) |i| {
-                        const w = self.contentCellWidth(i);
-                        if (col + w > content_width) break;
-                        try grid.setRune(border_size + col, border_size + view_row, if (self.options.password) '•' else self.content.items[i]);
-                        col += w;
-                    }
-                }
-
-                if (has_focus) {
-                    // the cursor's screen column within its row (its offset
-                    // counts codepoints, so convert to display columns)
-                    const cur_col = self.columnsBetween(self.row_starts.items[rc.row], self.cursor);
-                    if (cur_col < inner_width - bar) {
-                        const view_row = rc.row - self.row_offset;
-                        const cursor_cell = try grid.cell(border_size + cur_col, border_size + view_row);
-                        if (cursor_cell.rune == null and !cursor_cell.continuation) {
-                            try grid.setRune(border_size + cur_col, border_size + view_row, ' ');
-                        }
-                        cursor_cell.style.inverted = true;
-                    }
-                }
-
-                if (bar == 1) {
-                    try draw.scrollBarVert(&grid, border_size + inner_width - 1, border_size, vp_h, rows, vp_h, @intCast(self.row_offset));
-                }
-            }
-
-            if (effective_border) |border_style| {
-                try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
-            }
-
-            self.grid = grid;
-        }
-
-        pub fn input(self: *TextInput(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
-            _ = root_focus;
-            if (self.options.read_only) switch (key) {
-                .enter, .delete, .backspace, .codepoint => return,
-                else => {},
-            };
-            if (self.options.multiline) {
-                switch (key) {
-                    .enter => {
-                        try self.content.insert(allocator, self.cursor, '\n');
-                        self.cursor += 1;
-                        return;
-                    },
-                    .arrow_up, .arrow_down, .home, .end => {
-                        const wrap_width = self.last_wrap_width orelse return;
-                        try self.computeRowStarts(allocator, wrap_width);
-                        const rc = self.cursorRowCol();
-                        switch (key) {
-                            .arrow_up => if (rc.row > 0) {
-                                self.cursor = @min(self.row_starts.items[rc.row - 1] + rc.offset, self.rowMaxIndex(rc.row - 1));
-                            },
-                            .arrow_down => if (rc.row + 1 < self.row_starts.items.len) {
-                                self.cursor = @min(self.row_starts.items[rc.row + 1] + rc.offset, self.rowMaxIndex(rc.row + 1));
-                            },
-                            .home => self.cursor = self.row_starts.items[rc.row],
-                            .end => self.cursor = self.rowMaxIndex(rc.row),
-                            else => unreachable,
-                        }
-                        return;
-                    },
-                    else => {},
-                }
-            }
+    pub fn input(self: *TextInput, allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
+        _ = root_focus;
+        if (self.options.read_only) switch (key) {
+            .enter, .delete, .backspace, .codepoint => return,
+            else => {},
+        };
+        if (self.options.multiline) {
             switch (key) {
-                .arrow_left => self.cursor -|= 1,
-                .arrow_right => if (self.cursor < self.content.items.len) {
+                .enter => {
+                    try self.content.insert(allocator, self.cursor, '\n');
                     self.cursor += 1;
+                    return;
                 },
-                .home => self.cursor = 0,
-                .end => self.cursor = self.content.items.len,
-                .delete => if (self.cursor < self.content.items.len) {
-                    _ = self.content.orderedRemove(self.cursor);
-                },
-                .backspace => if (self.cursor > 0) {
-                    _ = self.content.orderedRemove(self.cursor - 1);
-                    self.cursor -= 1;
-                },
-                .codepoint => |cp| {
-                    // ignore control characters; only printable text is inserted
-                    if (cp < 0x20) return;
-                    try self.content.insert(allocator, self.cursor, cp);
-                    self.cursor += 1;
+                .arrow_up, .arrow_down, .home, .end => {
+                    const wrap_width = self.last_wrap_width orelse return;
+                    try self.computeRowStarts(allocator, wrap_width);
+                    const rc = self.cursorRowCol();
+                    switch (key) {
+                        .arrow_up => if (rc.row > 0) {
+                            self.cursor = @min(self.row_starts.items[rc.row - 1] + rc.offset, self.rowMaxIndex(rc.row - 1));
+                        },
+                        .arrow_down => if (rc.row + 1 < self.row_starts.items.len) {
+                            self.cursor = @min(self.row_starts.items[rc.row + 1] + rc.offset, self.rowMaxIndex(rc.row + 1));
+                        },
+                        .home => self.cursor = self.row_starts.items[rc.row],
+                        .end => self.cursor = self.rowMaxIndex(rc.row),
+                        else => unreachable,
+                    }
+                    return;
                 },
                 else => {},
             }
         }
-
-        pub fn clearGrid(self: *TextInput(Widget)) void {
-            if (self.grid) |*grid| {
-                grid.deinit();
-                self.grid = null;
-            }
+        switch (key) {
+            .arrow_left => self.cursor -|= 1,
+            .arrow_right => if (self.cursor < self.content.items.len) {
+                self.cursor += 1;
+            },
+            .home => self.cursor = 0,
+            .end => self.cursor = self.content.items.len,
+            .delete => if (self.cursor < self.content.items.len) {
+                _ = self.content.orderedRemove(self.cursor);
+            },
+            .backspace => if (self.cursor > 0) {
+                _ = self.content.orderedRemove(self.cursor - 1);
+                self.cursor -= 1;
+            },
+            .codepoint => |cp| {
+                // ignore control characters; only printable text is inserted
+                if (cp < 0x20) return;
+                try self.content.insert(allocator, self.cursor, cp);
+                self.cursor += 1;
+            },
+            else => {},
         }
+    }
 
-        pub fn getGrid(self: TextInput(Widget)) ?Grid {
-            return self.grid;
+    pub fn clearGrid(self: *TextInput) void {
+        if (self.grid) |*grid| {
+            grid.deinit();
+            self.grid = null;
         }
+    }
 
-        pub fn getFocus(self: *TextInput(Widget)) *Focus {
-            return self.focus;
-        }
-    };
-}
+    pub fn getGrid(self: TextInput) ?Grid {
+        return self.grid;
+    }
+
+    pub fn getFocus(self: *TextInput) *Focus {
+        return self.focus;
+    }
+};
 
 pub const ScrollDirection = enum {
     vert,
     horiz,
     both,
+};
+
+pub const ScrollOptions = struct {
+    direction: ScrollDirection = .vert,
+    show_bar: bool = true,
+    // when true, expose the full unclipped content (and skip the text
+    // scrollbar and focus-rect clipping) so a web renderer can place the
+    // content in a natively-scrollable element
+    web_native: bool = false,
+    // when true, the grid fills its bounded viewport (content drawn at the
+    // top-left, any scroll bar pinned to the far edge) instead of shrinking
+    // to the content. lets a bordered/parent layout keep the bar at its
+    // edge even when the content is smaller than the viewport.
+    fill: bool = false,
 };
 
 pub fn Scroll(comptime Widget: type) type {
@@ -1267,26 +1275,12 @@ pub fn Scroll(comptime Widget: type) type {
         child: *Widget,
         x: isize,
         y: isize,
-        options: Options,
+        options: ScrollOptions,
         // columns/rows the scroll bar actually occupied on the last build. zero
         // when the content fit and no bar was drawn; used to keep scrollToRect's
         // viewport math in sync with what was rendered.
         bar_w: usize,
         bar_h: usize,
-
-        pub const Options = struct {
-            direction: ScrollDirection = .vert,
-            show_bar: bool = true,
-            // when true, expose the full unclipped content (and skip the text
-            // scrollbar and focus-rect clipping) so a web renderer can place the
-            // content in a natively-scrollable element
-            web_native: bool = false,
-            // when true, the grid fills its bounded viewport (content drawn at the
-            // top-left, any scroll bar pinned to the far edge) instead of shrinking
-            // to the content. lets a bordered/parent layout keep the bar at its
-            // edge even when the content is smaller than the viewport.
-            fill: bool = false,
-        };
 
         // subtract a scroll bar's reserved column/row from an optional size
         // constraint, keeping at least one cell. a null (unbounded) size stays null.
@@ -1320,7 +1314,7 @@ pub fn Scroll(comptime Widget: type) type {
             };
         }
 
-        pub fn init(allocator: std.mem.Allocator, widget: Widget, options: Options) !Scroll(Widget) {
+        pub fn init(allocator: std.mem.Allocator, widget: Widget, options: ScrollOptions) !Scroll(Widget) {
             const child = try allocator.create(Widget);
             errdefer allocator.destroy(child);
             child.* = widget;
