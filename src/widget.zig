@@ -44,7 +44,7 @@ pub fn Text(comptime Widget: type) type {
             errdefer grid.deinit();
             var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
             var i: usize = 0;
-            while (utf8.nextCodepointSlice()) |char| {
+            while (utf8.nextCodepoint()) |char| {
                 const w = wth.cellWidth(char);
                 if (i + w > grid.size.width) {
                     break;
@@ -635,7 +635,7 @@ pub fn TextBox(comptime Widget: type) type {
                                         try self.lines.append(allocator, try line.toOwnedSlice(allocator));
                                         line_w = 0;
                                     } else {
-                                        const w = wth.cellWidth(char);
+                                        const w = wth.cellWidth(try std.unicode.utf8Decode(char));
                                         // a wide rune that doesn't fit the remaining
                                         // columns wraps early, leaving the last
                                         // column blank
@@ -685,7 +685,7 @@ pub fn TextBox(comptime Widget: type) type {
                                         }
                                     } else {
                                         try word.appendSlice(allocator, cp);
-                                        word_w += wth.cellWidth(cp);
+                                        word_w += wth.cellWidth(try std.unicode.utf8Decode(cp));
                                     }
 
                                     if (std.mem.eql(u8, utf8.peek(1), "")) {
@@ -804,7 +804,7 @@ pub fn TextBox(comptime Widget: type) type {
                 }
                 var w_utf8 = (try std.unicode.Utf8View.init(word.items)).iterator();
                 while (w_utf8.nextCodepointSlice()) |c| {
-                    const w = wth.cellWidth(c);
+                    const w = wth.cellWidth(try std.unicode.utf8Decode(c));
                     if (line_w.* > 0 and line_w.* + w > inner_width) {
                         try lines.append(allocator, try line.toOwnedSlice(allocator));
                         line_w.* = 0;
@@ -824,7 +824,7 @@ pub fn TextInput(comptime Widget: type) type {
     return struct {
         focus: *Focus,
         grid: ?Grid,
-        content: std.ArrayList([]const u8),
+        content: std.ArrayList(u21),
         cursor: usize,
         scroll_offset: usize,
         options: Options,
@@ -889,49 +889,44 @@ pub fn TextInput(comptime Widget: type) type {
         pub fn deinit(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
             self.focus.destroy(allocator);
             self.clearGrid();
-            for (self.content.items) |cp| allocator.free(cp);
             self.content.deinit(allocator);
             self.row_starts.deinit(allocator);
         }
 
-        // replaces all typed content with the codepoints in `bytes`, dropping
-        // existing allocations. cursor lands at the end so subsequent edits
-        // (or rendering) treat the supplied text as the new state.
+        // replace all typed content at once. cursor lands at the end so
+        // subsequent edits (or rendering) treat it as the new state.
         pub fn setContent(self: *TextInput(Widget), allocator: std.mem.Allocator, bytes: []const u8) !void {
-            for (self.content.items) |cp| allocator.free(cp);
-            self.content.clearAndFree(allocator);
-
+            var content: std.ArrayList(u21) = .empty;
+            errdefer content.deinit(allocator);
             var utf8 = (try std.unicode.Utf8View.init(bytes)).iterator();
-            while (utf8.nextCodepointSlice()) |cp_slice| {
-                const owned = try allocator.dupe(u8, cp_slice);
-                errdefer allocator.free(owned);
-                try self.content.append(allocator, owned);
+            while (utf8.nextCodepoint()) |cp| {
+                try content.append(allocator, cp);
             }
 
+            self.content.deinit(allocator);
+            self.content = content;
             self.cursor = self.content.items.len;
             self.scroll_offset = 0;
             self.row_offset = 0;
         }
 
         pub fn clear(self: *TextInput(Widget), allocator: std.mem.Allocator) void {
-            for (self.content.items) |cp| allocator.free(cp);
             self.content.clearAndFree(allocator);
             self.cursor = 0;
             self.scroll_offset = 0;
             self.row_offset = 0;
         }
 
-        // concatenates the stored codepoint slices into a single owned buffer
+        // encode the stored codepoints into a single owned utf-8 buffer
         pub fn text(self: *const TextInput(Widget), allocator: std.mem.Allocator) ![]u8 {
-            var total: usize = 0;
-            for (self.content.items) |cp| total += cp.len;
-            const buf = try allocator.alloc(u8, total);
-            var i: usize = 0;
+            var text_buffer: std.ArrayList(u8) = .empty;
+            errdefer text_buffer.deinit(allocator);
             for (self.content.items) |cp| {
-                @memcpy(buf[i .. i + cp.len], cp);
-                i += cp.len;
+                var encoded: [4]u8 = undefined;
+                const len = try std.unicode.utf8Encode(cp, &encoded);
+                try text_buffer.appendSlice(allocator, encoded[0..len]);
             }
-            return buf;
+            return text_buffer.toOwnedSlice(allocator);
         }
 
         // display columns the codepoint at content index i occupies on
@@ -959,7 +954,7 @@ pub fn TextInput(comptime Widget: type) type {
             var col: usize = 0;
             var last_space: ?usize = null;
             for (self.content.items, 0..) |cp, i| {
-                if (std.mem.eql(u8, cp, "\n")) {
+                if (cp == '\n') {
                     try self.row_starts.append(allocator, i + 1);
                     col = 0;
                     last_space = null;
@@ -968,7 +963,7 @@ pub fn TextInput(comptime Widget: type) type {
                 const w = self.contentCellWidth(i);
                 // an overflowing space stays put as trailing whitespace
                 // instead of opening a row of its own; the next word breaks
-                const is_space = std.mem.eql(u8, cp, " ");
+                const is_space = cp == ' ';
                 if (!is_space and col > 0 and col + w > wrap_width) {
                     // break after the row's last space if it has one,
                     // otherwise char-wrap
@@ -1087,7 +1082,7 @@ pub fn TextInput(comptime Widget: type) type {
                         // a wide rune that doesn't fit the last column is
                         // left undrawn
                         if (col + w > inner_width) break;
-                        try grid.setRune(cell_x, cell_y, if (self.options.password) "•" else self.content.items[content_index]);
+                        try grid.setRune(cell_x, cell_y, if (self.options.password) '•' else self.content.items[content_index]);
                         if (content_index == self.cursor and has_focus) {
                             (try grid.cell(cell_x, cell_y)).style.inverted = true;
                         }
@@ -1096,7 +1091,7 @@ pub fn TextInput(comptime Widget: type) type {
                     } else {
                         if (self.cursor == content_index and has_focus) {
                             // cursor sits past the last char — paint a space underneath
-                            try grid.setRune(cell_x, cell_y, " ");
+                            try grid.setRune(cell_x, cell_y, ' ');
                             (try grid.cell(cell_x, cell_y)).style.inverted = true;
                         }
                         break;
@@ -1173,12 +1168,12 @@ pub fn TextInput(comptime Widget: type) type {
                     if (row >= rows) break;
                     const start = self.row_starts.items[row];
                     var end = if (row + 1 < rows) self.row_starts.items[row + 1] else self.content.items.len;
-                    if (end > start and std.mem.eql(u8, self.content.items[end - 1], "\n")) end -= 1;
+                    if (end > start and self.content.items[end - 1] == '\n') end -= 1;
                     var col: usize = 0;
                     for (start..end) |i| {
                         const w = self.contentCellWidth(i);
                         if (col + w > content_width) break;
-                        try grid.setRune(border_size + col, border_size + view_row, if (self.options.password) "•" else self.content.items[i]);
+                        try grid.setRune(border_size + col, border_size + view_row, if (self.options.password) '•' else self.content.items[i]);
                         col += w;
                     }
                 }
@@ -1191,7 +1186,7 @@ pub fn TextInput(comptime Widget: type) type {
                         const view_row = rc.row - self.row_offset;
                         const cursor_cell = try grid.cell(border_size + cur_col, border_size + view_row);
                         if (cursor_cell.rune == null and !cursor_cell.continuation) {
-                            try grid.setRune(border_size + cur_col, border_size + view_row, " ");
+                            try grid.setRune(border_size + cur_col, border_size + view_row, ' ');
                         }
                         cursor_cell.style.inverted = true;
                     }
@@ -1218,9 +1213,7 @@ pub fn TextInput(comptime Widget: type) type {
             if (self.options.multiline) {
                 switch (key) {
                     .enter => {
-                        const owned = try allocator.dupe(u8, "\n");
-                        errdefer allocator.free(owned);
-                        try self.content.insert(allocator, self.cursor, owned);
+                        try self.content.insert(allocator, self.cursor, '\n');
                         self.cursor += 1;
                         return;
                     },
@@ -1252,22 +1245,16 @@ pub fn TextInput(comptime Widget: type) type {
                 .home => self.cursor = 0,
                 .end => self.cursor = self.content.items.len,
                 .delete => if (self.cursor < self.content.items.len) {
-                    const removed = self.content.orderedRemove(self.cursor);
-                    allocator.free(removed);
+                    _ = self.content.orderedRemove(self.cursor);
                 },
                 .backspace => if (self.cursor > 0) {
-                    const removed = self.content.orderedRemove(self.cursor - 1);
-                    allocator.free(removed);
+                    _ = self.content.orderedRemove(self.cursor - 1);
                     self.cursor -= 1;
                 },
                 .codepoint => |cp| {
                     // ignore control characters; only printable text is inserted
                     if (cp < 0x20) return;
-                    var buf: [4]u8 = undefined;
-                    const len = try std.unicode.utf8Encode(cp, &buf);
-                    const owned = try allocator.dupe(u8, buf[0..len]);
-                    errdefer allocator.free(owned);
-                    try self.content.insert(allocator, self.cursor, owned);
+                    try self.content.insert(allocator, self.cursor, cp);
                     self.cursor += 1;
                 },
                 else => {},

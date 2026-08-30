@@ -202,18 +202,9 @@ pub fn runeWidth(cp: u21) u2 {
 
 // columns a grid cell holding `rune` occupies: 1 or 2. a cell always spans
 // at least one column, so zero-width codepoints (which widgets don't merge
-// into the preceding cell yet) clamp to 1. tolerates a multi-codepoint
-// cluster in the slice by summing, and invalid utf-8 by reporting 1.
-pub fn cellWidth(rune: []const u8) u2 {
-    const view = std.unicode.Utf8View.init(rune) catch return 1;
-    var iter = view.iterator();
-    var total: usize = 0;
-    while (iter.nextCodepoint()) |cp| {
-        total += runeWidth(cp);
-        if (total >= 2) return 2;
-    }
-    // total is 0 (lone zero-width) or 1 here; either way the cell spans one column
-    return 1;
+// into the preceding cell yet) clamp to 1.
+pub fn cellWidth(rune: u21) u2 {
+    return @max(1, runeWidth(rune));
 }
 
 // total columns the string occupies when every codepoint gets its own cell,
@@ -222,7 +213,7 @@ pub fn cellWidth(rune: []const u8) u2 {
 pub fn displayWidth(s: []const u8) !usize {
     var iter = (try std.unicode.Utf8View.init(s)).iterator();
     var total: usize = 0;
-    while (iter.nextCodepointSlice()) |cp| {
+    while (iter.nextCodepoint()) |cp| {
         total += cellWidth(cp);
     }
     return total;
@@ -260,9 +251,9 @@ test "strWidth and cellWidth" {
     try std.testing.expectEqual(@as(usize, 4), try strWidth("中文"));
     try std.testing.expectEqual(@as(usize, 7), try strWidth("abc中文")); // 3 + 4
     try std.testing.expectEqual(@as(usize, 1), try strWidth("e\u{0301}")); // e + combining acute
-    try std.testing.expectEqual(@as(u2, 1), cellWidth("a"));
-    try std.testing.expectEqual(@as(u2, 2), cellWidth("中"));
-    try std.testing.expectEqual(@as(u2, 1), cellWidth("\u{0301}")); // a lone mark still fills its cell
+    try std.testing.expectEqual(@as(u2, 1), cellWidth('a'));
+    try std.testing.expectEqual(@as(u2, 2), cellWidth('中'));
+    try std.testing.expectEqual(@as(u2, 1), cellWidth('\u{0301}')); // a lone mark still fills its cell
     try std.testing.expectEqual(@as(usize, 7), try displayWidth("abc中文"));
     // per-cell layout gives the combining mark a cell of its own
     try std.testing.expectEqual(@as(usize, 2), try displayWidth("e\u{0301}"));

@@ -775,7 +775,7 @@ pub fn renderToWriter(
     var next_grid: ?grd.Grid = null;
     if (grid_changed) {
         if (current_grid) |grid| {
-            next_grid = try grd.Grid.initFromGridOwned(state.allocator, grid, grid.size, 0, 0);
+            next_grid = try grid.clone(state.allocator);
         }
     }
     errdefer if (next_grid) |*grid| grid.deinit();
@@ -798,7 +798,7 @@ pub fn renderToWriter(
                 for (0..grid.size.width) |x| {
                     const cell = (try grid.cell(x, y)).*;
                     if (cell.rune) |rune| {
-                        try writeAt(writer, rune, cell.style, x, y, size.height);
+                        try writeRuneAt(writer, rune, cell.style, x, y, size.height);
                     }
                 }
             }
@@ -814,7 +814,7 @@ pub fn renderToWriter(
 
                     grid_changed = true;
                     if (cell.rune) |rune| {
-                        try writeAt(writer, rune, cell.style, x, y, size.height);
+                        try writeRuneAt(writer, rune, cell.style, x, y, size.height);
                         continue;
                     }
 
@@ -840,6 +840,12 @@ pub fn renderToWriter(
     }
 
     return grid_changed;
+}
+
+fn writeRuneAt(writer: *std.Io.Writer, rune: u21, style: grd.Grid.Style, x: usize, y: usize, height: usize) !void {
+    var encoded: [4]u8 = undefined;
+    const len = try std.unicode.utf8Encode(rune, &encoded);
+    try writeAt(writer, encoded[0..len], style, x, y, height);
 }
 
 fn writeAt(writer: *std.Io.Writer, txt: []const u8, style: grd.Grid.Style, x: usize, y: usize, height: usize) !void {

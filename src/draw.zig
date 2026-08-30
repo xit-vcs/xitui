@@ -17,7 +17,7 @@ pub fn label(grid: *Grid, y: usize, text: []const u8) !void {
     if (text.len == 0 or grid.size.width <= 2) return;
     var label_iter = (try std.unicode.Utf8View.init(text)).iterator();
     var x: usize = 1;
-    while (label_iter.nextCodepointSlice()) |ch| {
+    while (label_iter.nextCodepoint()) |ch| {
         const w = wth.cellWidth(ch);
         if (x + w > grid.size.width - 1) break;
         try grid.setRune(x, y, ch);
@@ -28,35 +28,35 @@ pub fn label(grid: *Grid, y: usize, text: []const u8) !void {
 // draw a border (and its labels) around the outermost cells of the grid.
 pub fn border(grid: *Grid, border_style: BorderStyle, rounded_corners: bool, top_label: []const u8, bottom_label: []const u8) !void {
     const dashed = border_style == .single_dashed or border_style == .double_dashed;
-    const horiz_line = switch (border_style) {
-        .hidden => " ",
-        .single, .single_dashed => "─",
-        .double, .double_dashed => "═",
+    const horiz_line: u21 = switch (border_style) {
+        .hidden => ' ',
+        .single, .single_dashed => '─',
+        .double, .double_dashed => '═',
     };
-    const vert_line = switch (border_style) {
-        .hidden => " ",
-        .single, .single_dashed => "│",
-        .double, .double_dashed => "║",
+    const vert_line: u21 = switch (border_style) {
+        .hidden => ' ',
+        .single, .single_dashed => '│',
+        .double, .double_dashed => '║',
     };
-    const top_left = switch (border_style) {
-        .hidden => " ",
-        .single, .single_dashed => if (rounded_corners) "╭" else "┌",
-        .double, .double_dashed => if (rounded_corners) "╭" else "╔",
+    const top_left: u21 = switch (border_style) {
+        .hidden => ' ',
+        .single, .single_dashed => if (rounded_corners) '╭' else '┌',
+        .double, .double_dashed => if (rounded_corners) '╭' else '╔',
     };
-    const top_right = switch (border_style) {
-        .hidden => " ",
-        .single, .single_dashed => if (rounded_corners) "╮" else "┐",
-        .double, .double_dashed => if (rounded_corners) "╮" else "╗",
+    const top_right: u21 = switch (border_style) {
+        .hidden => ' ',
+        .single, .single_dashed => if (rounded_corners) '╮' else '┐',
+        .double, .double_dashed => if (rounded_corners) '╮' else '╗',
     };
-    const bottom_left = switch (border_style) {
-        .hidden => " ",
-        .single, .single_dashed => if (rounded_corners) "╰" else "└",
-        .double, .double_dashed => if (rounded_corners) "╰" else "╚",
+    const bottom_left: u21 = switch (border_style) {
+        .hidden => ' ',
+        .single, .single_dashed => if (rounded_corners) '╰' else '└',
+        .double, .double_dashed => if (rounded_corners) '╰' else '╚',
     };
-    const bottom_right = switch (border_style) {
-        .hidden => " ",
-        .single, .single_dashed => if (rounded_corners) "╯" else "┘",
-        .double, .double_dashed => if (rounded_corners) "╯" else "╝",
+    const bottom_right: u21 = switch (border_style) {
+        .hidden => ' ',
+        .single, .single_dashed => if (rounded_corners) '╯' else '┘',
+        .double, .double_dashed => if (rounded_corners) '╯' else '╝',
     };
     for (1..grid.size.width - 1) |x| {
         if (dashed and x % 2 == 1) continue;
@@ -78,9 +78,9 @@ pub fn border(grid: *Grid, border_style: BorderStyle, rounded_corners: bool, top
 }
 
 // the solid run that represents the visible portion of the content.
-const thumb_rune = "█";
+const thumb_rune: u21 = '█';
 // the lighter run drawn behind the thumb for the rest of the bar.
-const track_rune = "░";
+const track_rune: u21 = '░';
 
 // the thumb's length is the track scaled by the visible fraction of the
 // content, its position the scroll offset scaled into the leftover track;
