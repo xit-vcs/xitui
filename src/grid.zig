@@ -1,13 +1,11 @@
 const std = @import("std");
 const layout = @import("./layout.zig");
 const wth = @import("./width.zig");
-const NDSlice = @import("./ndslice.zig").NDSlice;
 
 pub const Grid = struct {
     allocator: std.mem.Allocator,
     size: layout.Size,
-    cells: Cells,
-    buffer: []Grid.Cell,
+    cells: []Cell,
     // normally cells borrow their rune bytes from widget-owned memory, which is
     // only valid for the frame they were built in. when a grid must outlive that
     // frame (e.g. the previous-frame snapshot the renderer diffs against), it
@@ -74,51 +72,46 @@ pub const Grid = struct {
             }
         }
     };
-    pub const Cells = NDSlice(Cell, 2, .row_major);
-
     pub fn init(allocator: std.mem.Allocator, size: layout.Size) !Grid {
-        const buffer = try allocator.alloc(Grid.Cell, size.width * size.height);
-        errdefer allocator.free(buffer);
-        for (buffer) |*cell| {
-            cell.* = .{ .rune = null };
-        }
+        const cells = try allocator.alloc(Cell, size.width * size.height);
+        @memset(cells, .{ .rune = null });
         return .{
             .allocator = allocator,
             .size = size,
-            .cells = try Grid.Cells.init(.{ size.height, size.width }, buffer),
-            .buffer = buffer,
+            .cells = cells,
         };
     }
 
+    pub fn cell(self: Grid, x: usize, y: usize) error{IndexOutOfBounds}!*Cell {
+        if (x >= self.size.width or y >= self.size.height) return error.IndexOutOfBounds;
+        return &self.cells[y * self.size.width + x];
+    }
+
     pub fn initFromGrid(allocator: std.mem.Allocator, grid: Grid, size: layout.Size, grid_x: isize, grid_y: isize) !Grid {
-        const buffer = try allocator.alloc(Grid.Cell, size.width * size.height);
-        errdefer allocator.free(buffer);
-        for (buffer) |*cell| {
-            cell.* = .{ .rune = null };
-        }
+        var new_grid = try Grid.init(allocator, size);
+        errdefer new_grid.deinit();
         const ugrid_x: usize = if (grid_x < 0) 0 else @intCast(grid_x);
         const ugrid_y: usize = if (grid_y < 0) 0 else @intCast(grid_y);
-        var cells = try Grid.Cells.init(.{ size.height, size.width }, buffer);
         var dest_y: usize = if (grid_y < 0) @abs(grid_y) else 0;
         for (ugrid_y..ugrid_y + size.height) |source_y| {
             var dest_x: usize = if (grid_x < 0) @abs(grid_x) else 0;
             for (ugrid_x..ugrid_x + size.width) |source_x| {
-                if (cells.at(.{ dest_y, dest_x })) |dest_index| {
-                    if (grid.cells.at(.{ source_y, source_x })) |source_index| {
-                        var src = grid.cells.items[source_index];
+                if (new_grid.cell(dest_x, dest_y)) |dest_cell| {
+                    if (grid.cell(source_x, source_y)) |source_cell| {
+                        var src = source_cell.*;
                         // a wide pair split by the view's left or right edge
                         // renders as a blank column — half a glyph can't be
                         // drawn
                         if (src.continuation and source_x == ugrid_x) {
                             src = .{ .rune = " ", .style = src.style };
                         } else if (source_x + 1 == ugrid_x + size.width) {
-                            if (grid.cells.at(.{ source_y, source_x + 1 })) |next_index| {
-                                if (grid.cells.items[next_index].continuation) {
+                            if (grid.cell(source_x + 1, source_y)) |next_cell| {
+                                if (next_cell.continuation) {
                                     src = .{ .rune = " ", .style = src.style };
                                 }
                             } else |_| {}
                         }
-                        cells.items[dest_index] = src;
+                        dest_cell.* = src;
                     } else |_| {
                         break;
                     }
@@ -129,17 +122,12 @@ pub const Grid = struct {
             }
             dest_y += 1;
         }
-        return .{
-            .allocator = allocator,
-            .size = size,
-            .cells = cells,
-            .buffer = buffer,
-        };
+        return new_grid;
     }
 
     pub fn deinit(self: *Grid) void {
         if (self.rune_buffer) |rune_buffer| self.allocator.free(rune_buffer);
-        self.allocator.free(self.buffer);
+        self.allocator.free(self.cells);
     }
 
     // a copy of `grid` that owns its rune bytes, so it stays valid after the
@@ -151,16 +139,16 @@ pub const Grid = struct {
         errdefer new_grid.deinit();
 
         var total: usize = 0;
-        for (new_grid.buffer) |cell| {
-            if (cell.rune) |rune| total += rune.len;
+        for (new_grid.cells) |current| {
+            if (current.rune) |rune| total += rune.len;
         }
         if (total > 0) {
             const rune_buffer = try allocator.alloc(u8, total);
             var offset: usize = 0;
-            for (new_grid.buffer) |*cell| {
-                if (cell.rune) |rune| {
+            for (new_grid.cells) |*current| {
+                if (current.rune) |rune| {
                     @memcpy(rune_buffer[offset .. offset + rune.len], rune);
-                    cell.rune = rune_buffer[offset .. offset + rune.len];
+                    current.rune = rune_buffer[offset .. offset + rune.len];
                     offset += rune.len;
                 }
             }
@@ -174,20 +162,20 @@ pub const Grid = struct {
     // becomes a space — the column stays occupied, but half a glyph can't be
     // drawn. the cell itself is left for the caller to overwrite.
     fn blankPartner(self: *Grid, x: usize, y: usize) void {
-        const index = self.cells.at(.{ y, x }) catch return;
-        if (self.cells.items[index].continuation) {
+        const target = self.cell(x, y) catch return;
+        if (target.continuation) {
             // (x - 1) holds the wide rune this cell completes. a continuation
             // never sits in column 0, but stay safe against hand-built grids.
             if (x == 0) return;
-            const lead_index = self.cells.at(.{ y, x - 1 }) catch return;
-            self.cells.items[lead_index].rune = " ";
-            self.cells.items[lead_index].continuation = false;
+            const lead = self.cell(x - 1, y) catch return;
+            lead.rune = " ";
+            lead.continuation = false;
         } else {
             // if (x + 1) is a continuation, this cell is its wide lead
-            const cont_index = self.cells.at(.{ y, x + 1 }) catch return;
-            if (self.cells.items[cont_index].continuation) {
-                self.cells.items[cont_index].rune = " ";
-                self.cells.items[cont_index].continuation = false;
+            const continuation = self.cell(x + 1, y) catch return;
+            if (continuation.continuation) {
+                continuation.rune = " ";
+                continuation.continuation = false;
             }
         }
     }
@@ -199,41 +187,41 @@ pub const Grid = struct {
     // edge, with no room for its continuation, becomes a space too. the
     // cell's style is left untouched.
     pub fn setRune(self: *Grid, x: usize, y: usize, rune: ?[]const u8) !void {
-        const index = try self.cells.at(.{ y, x });
+        const target = try self.cell(x, y);
         self.blankPartner(x, y);
-        self.cells.items[index].continuation = false;
+        target.continuation = false;
         if (rune != null and wth.cellWidth(rune.?) == 2) {
-            if (self.cells.at(.{ y, x + 1 })) |cont_index| {
+            if (self.cell(x + 1, y)) |continuation| {
                 self.blankPartner(x + 1, y);
-                self.cells.items[index].rune = rune;
-                self.cells.items[cont_index].rune = null;
-                self.cells.items[cont_index].continuation = true;
-                self.cells.items[cont_index].style = self.cells.items[index].style;
+                target.rune = rune;
+                continuation.rune = null;
+                continuation.continuation = true;
+                continuation.style = target.style;
             } else |_| {
-                self.cells.items[index].rune = " ";
+                target.rune = " ";
             }
         } else {
-            self.cells.items[index].rune = rune;
+            target.rune = rune;
         }
     }
 
     pub fn drawGrid(self: *Grid, child_grid: Grid, target_x: usize, target_y: usize) !void {
         for (0..child_grid.size.height) |y| {
             for (0..child_grid.size.width) |x| {
-                const src = child_grid.cells.items[try child_grid.cells.at(.{ y, x })];
-                if (self.cells.at(.{ y + target_y, x + target_x })) |index| {
+                const src = (try child_grid.cell(x, y)).*;
+                if (self.cell(x + target_x, y + target_y)) |target| {
                     // blank the outside half of any wide pair this write
                     // splits (the inside half is overwritten by the copy)
                     self.blankPartner(x + target_x, y + target_y);
-                    self.cells.items[index] = src;
+                    target.* = src;
                 } else |_| {
                     // clipped by our right edge: if the cell that didn't fit
                     // was a continuation, its wide lead landed in our last
                     // column as half a glyph — blank it
                     if (src.continuation and x > 0) {
-                        if (self.cells.at(.{ y + target_y, x + target_x - 1 })) |lead_index| {
-                            self.cells.items[lead_index].rune = " ";
-                            self.cells.items[lead_index].continuation = false;
+                        if (self.cell(x + target_x - 1, y + target_y)) |lead| {
+                            lead.rune = " ";
+                            lead.continuation = false;
                         } else |_| {}
                     }
                     break;
@@ -252,10 +240,10 @@ pub const Grid = struct {
 
         for (0..self.size.height) |y| {
             for (0..self.size.width) |x| {
-                const cell = self.cells.items[try self.cells.at(.{ y, x })];
+                const current = (try self.cell(x, y)).*;
                 // the wide rune to the left already covers this column
-                if (cell.continuation) continue;
-                if (cell.rune) |rune| {
+                if (current.continuation) continue;
+                if (current.rune) |rune| {
                     for (rune) |byte| {
                         try buffer.append(allocator, byte);
                     }
@@ -276,7 +264,7 @@ test {
     const allocator = std.testing.allocator;
     var grid = try Grid.init(allocator, .{ .width = 10, .height = 10 });
     defer grid.deinit();
-    try std.testing.expectEqual(null, grid.cells.items[try grid.cells.at(.{ 0, 0 })].rune);
+    try std.testing.expectEqual(null, (try grid.cell(0, 0)).rune);
 }
 
 test "setRune keeps wide pairs consistent" {
@@ -286,26 +274,26 @@ test "setRune keeps wide pairs consistent" {
 
     // a wide rune claims its continuation cell
     try grid.setRune(0, 0, "中");
-    try std.testing.expectEqualStrings("中", grid.cells.items[0].rune.?);
-    try std.testing.expect(grid.cells.items[1].continuation);
-    try std.testing.expectEqual(null, grid.cells.items[1].rune);
+    try std.testing.expectEqualStrings("中", grid.cells[0].rune.?);
+    try std.testing.expect(grid.cells[1].continuation);
+    try std.testing.expectEqual(null, grid.cells[1].rune);
 
     // overwriting the continuation blanks the orphaned lead
     try grid.setRune(1, 0, "x");
-    try std.testing.expectEqualStrings(" ", grid.cells.items[0].rune.?);
-    try std.testing.expect(!grid.cells.items[1].continuation);
-    try std.testing.expectEqualStrings("x", grid.cells.items[1].rune.?);
+    try std.testing.expectEqualStrings(" ", grid.cells[0].rune.?);
+    try std.testing.expect(!grid.cells[1].continuation);
+    try std.testing.expectEqualStrings("x", grid.cells[1].rune.?);
 
     // overwriting the lead blanks the orphaned continuation
     try grid.setRune(0, 0, "中");
     try grid.setRune(0, 0, "y");
-    try std.testing.expectEqualStrings("y", grid.cells.items[0].rune.?);
-    try std.testing.expect(!grid.cells.items[1].continuation);
-    try std.testing.expectEqualStrings(" ", grid.cells.items[1].rune.?);
+    try std.testing.expectEqualStrings("y", grid.cells[0].rune.?);
+    try std.testing.expect(!grid.cells[1].continuation);
+    try std.testing.expectEqualStrings(" ", grid.cells[1].rune.?);
 
     // a wide rune against the right edge has no room for its continuation
     try grid.setRune(3, 0, "中");
-    try std.testing.expectEqualStrings(" ", grid.cells.items[3].rune.?);
+    try std.testing.expectEqualStrings(" ", grid.cells[3].rune.?);
 }
 
 test "toString skips continuation cells" {

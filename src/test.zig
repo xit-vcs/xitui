@@ -701,8 +701,7 @@ test "StreamTerminal renders a widget tree" {
     );
 
     const grid = &widget.text_box.box.grid.?;
-    const first_text_cell = try grid.cells.at(.{ 1, 1 });
-    grid.cells.items[first_text_cell].style.inverted = true;
+    (try grid.cell(1, 1)).style.inverted = true;
 
     const styled_start = output.written().len;
     try std.testing.expect(try terminal.render(&widget));

@@ -1089,7 +1089,7 @@ pub fn TextInput(comptime Widget: type) type {
                         if (col + w > inner_width) break;
                         try grid.setRune(cell_x, cell_y, if (self.options.password) "•" else self.content.items[content_index]);
                         if (content_index == self.cursor and has_focus) {
-                            grid.cells.items[try grid.cells.at(.{ cell_y, cell_x })].style.inverted = true;
+                            (try grid.cell(cell_x, cell_y)).style.inverted = true;
                         }
                         col += w;
                         content_index += 1;
@@ -1097,7 +1097,7 @@ pub fn TextInput(comptime Widget: type) type {
                         if (self.cursor == content_index and has_focus) {
                             // cursor sits past the last char — paint a space underneath
                             try grid.setRune(cell_x, cell_y, " ");
-                            grid.cells.items[try grid.cells.at(.{ cell_y, cell_x })].style.inverted = true;
+                            (try grid.cell(cell_x, cell_y)).style.inverted = true;
                         }
                         break;
                     }
@@ -1189,11 +1189,11 @@ pub fn TextInput(comptime Widget: type) type {
                     const cur_col = self.columnsBetween(self.row_starts.items[rc.row], self.cursor);
                     if (cur_col < inner_width - bar) {
                         const view_row = rc.row - self.row_offset;
-                        const cell_idx = try grid.cells.at(.{ border_size + view_row, border_size + cur_col });
-                        if (grid.cells.items[cell_idx].rune == null and !grid.cells.items[cell_idx].continuation) {
+                        const cursor_cell = try grid.cell(border_size + cur_col, border_size + view_row);
+                        if (cursor_cell.rune == null and !cursor_cell.continuation) {
                             try grid.setRune(border_size + cur_col, border_size + view_row, " ");
                         }
-                        grid.cells.items[cell_idx].style.inverted = true;
+                        cursor_cell.style.inverted = true;
                     }
                 }
 

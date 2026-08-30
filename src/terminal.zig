@@ -758,8 +758,8 @@ pub fn renderToWriter(
             const last_grid = state.last_grid.?;
             for (0..grid.size.height) |y| {
                 for (0..grid.size.width) |x| {
-                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
-                    const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
+                    const cell = (try grid.cell(x, y)).*;
+                    const last_cell = (try last_grid.cell(x, y)).*;
                     if (!cell.eql(last_cell)) {
                         grid_changed = true;
                         break;
@@ -796,7 +796,7 @@ pub fn renderToWriter(
         if (current_grid) |grid| {
             for (0..grid.size.height) |y| {
                 for (0..grid.size.width) |x| {
-                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
+                    const cell = (try grid.cell(x, y)).*;
                     if (cell.rune) |rune| {
                         try writeAt(writer, rune, cell.style, x, y, size.height);
                     }
@@ -808,8 +808,8 @@ pub fn renderToWriter(
             const last_grid = state.last_grid.?;
             for (0..grid.size.height) |y| {
                 for (0..grid.size.width) |x| {
-                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
-                    const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
+                    const cell = (try grid.cell(x, y)).*;
+                    const last_cell = (try last_grid.cell(x, y)).*;
                     if (cell.eql(last_cell)) continue;
 
                     grid_changed = true;
