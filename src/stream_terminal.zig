@@ -2,14 +2,13 @@
 
 const std = @import("std");
 const inp = @import("./input.zig");
-const grd = @import("./grid.zig");
 const term = @import("./terminal.zig");
 const Size = @import("./layout.zig").Size;
 
 pub const StreamTerminal = struct {
-    allocator: std.mem.Allocator,
     writer: *std.Io.Writer,
     parser: term.EscapeParser,
+    render_state: term.RenderState,
     size: Size,
     resized: bool,
     quit: bool,
@@ -23,9 +22,9 @@ pub const StreamTerminal = struct {
         errdefer parser.deinit();
 
         var self = StreamTerminal{
-            .allocator = allocator,
             .writer = writer,
             .parser = parser,
+            .render_state = term.RenderState.init(allocator),
             .size = initial_size,
             .resized = false,
             .quit = false,
@@ -51,6 +50,7 @@ pub const StreamTerminal = struct {
         self.writer.flush() catch {};
 
         self.parser.deinit();
+        self.render_state.deinit();
     }
 
     pub fn shouldQuit(self: *const StreamTerminal) bool {
@@ -96,13 +96,11 @@ pub const StreamTerminal = struct {
         return self.parser.popQueued();
     }
 
-    pub fn render(self: *StreamTerminal, root_widget: anytype, last_grid: *grd.Grid, last_size: *Size) !bool {
+    pub fn render(self: *StreamTerminal, root_widget: anytype) !bool {
         return try term.renderToWriter(
             self.writer,
-            self.allocator,
+            &self.render_state,
             root_widget,
-            last_grid,
-            last_size,
             self.size,
         );
     }

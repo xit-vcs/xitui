@@ -672,11 +672,7 @@ test "StreamTerminal renders a widget tree" {
     var widget = Widget{ .text_box = try wgt.TextBox(Widget).init(allocator, "hello", .{ .border_style = .single, .wrap_kind = .none }) };
     defer widget.deinit(allocator);
 
-    var last_size = layout.Size{ .width = 0, .height = 0 };
-    var last_grid = try Grid.init(allocator, last_size);
-    defer last_grid.deinit();
-
-    _ = try terminal.render(&widget, &last_grid, &last_size);
+    _ = try terminal.render(&widget);
 
     const rendered = output.written()[startup_len..];
     // we should see the rune 'h' from "hello" written somewhere in the output
@@ -685,7 +681,7 @@ test "StreamTerminal renders a widget tree" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1B[") != null);
 
     const unchanged_start = output.written().len;
-    try std.testing.expect(!try terminal.render(&widget, &last_grid, &last_size));
+    try std.testing.expect(!try terminal.render(&widget));
     try std.testing.expectEqualStrings(
         "\x1B[?2026h\x1B[?2026l",
         output.written()[unchanged_start..],
@@ -698,10 +694,21 @@ test "StreamTerminal renders a widget tree" {
     }, widget.getFocus());
 
     const changed_start = output.written().len;
-    try std.testing.expect(try terminal.render(&widget, &last_grid, &last_size));
+    try std.testing.expect(try terminal.render(&widget));
     try std.testing.expectEqualStrings(
         "\x1B[?2026h\x1B[2;2Hj\x1B[?2026l",
         output.written()[changed_start..],
+    );
+
+    const grid = &widget.text_box.box.grid.?;
+    const first_text_cell = try grid.cells.at(.{ 1, 1 });
+    grid.cells.items[first_text_cell].style.inverted = true;
+
+    const styled_start = output.written().len;
+    try std.testing.expect(try terminal.render(&widget));
+    try std.testing.expectEqualStrings(
+        "\x1B[?2026h\x1B[2;2H\x1B[7mj\x1B[0m\x1B[?2026l",
+        output.written()[styled_start..],
     );
 }
 

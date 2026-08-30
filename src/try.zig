@@ -44,13 +44,9 @@ pub fn main() !void {
     term.setActive(&terminal);
     defer term.setActive(null);
 
-    var last_size = layout.Size{ .width = 0, .height = 0 };
-    var last_grid = try Grid.init(allocator, last_size);
-    defer last_grid.deinit();
-
     while (!term.quit.load(.monotonic)) {
         // render to tty
-        const grid_changed = try terminal.render(&root, &last_grid, &last_size);
+        const grid_changed = try terminal.render(&root);
 
         // process any inputs
         //
@@ -93,7 +89,7 @@ pub fn main() !void {
         // rebuild widget
         try root.build(allocator, .{
             .min_size = .{ .width = null, .height = null },
-            .max_size = .{ .width = last_size.width, .height = last_size.height },
+            .max_size = .{ .width = terminal.size.width, .height = terminal.size.height },
         }, root.getFocus());
     }
 }

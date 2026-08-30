@@ -488,6 +488,7 @@ pub const Core = switch (builtin.os.tag) {
 pub const Terminal = struct {
     core: Core,
     size: Size,
+    render_state: RenderState,
 
     pub fn init(io: std.Io, allocator: std.mem.Allocator) !Terminal {
         switch (builtin.os.tag) {
@@ -509,6 +510,7 @@ pub const Terminal = struct {
                         .last_mouse_buttons = 0,
                     },
                     .size = .{ .width = 0, .height = 0 },
+                    .render_state = RenderState.init(allocator),
                 };
 
                 try self.core.uncook();
@@ -557,6 +559,7 @@ pub const Terminal = struct {
                         .parser = parser,
                     },
                     .size = .{ .width = 0, .height = 0 },
+                    .render_state = RenderState.init(allocator),
                 };
 
                 try self.core.uncook();
@@ -597,6 +600,7 @@ pub const Terminal = struct {
     }
 
     pub fn deinit(self: *Terminal, io: std.Io) void {
+        self.render_state.deinit();
         switch (builtin.os.tag) {
             .windows => {
                 self.core.cook() catch {};
@@ -668,7 +672,7 @@ pub const Terminal = struct {
         self.core.cook() catch {};
     }
 
-    pub fn render(self: *Terminal, root_widget: anytype, last_grid: *grd.Grid, last_size: *Size) !bool {
+    pub fn render(self: *Terminal, root_widget: anytype) !bool {
         self.size = self.getSize() catch |err| {
             // ignore error if terminal is quitting (SIGINT was sent)
             if (quit.load(.monotonic)) {
@@ -680,56 +684,116 @@ pub const Terminal = struct {
 
         return try renderToWriter(
             &self.core.writer.interface,
-            self.core.allocator,
+            &self.render_state,
             root_widget,
-            last_grid,
-            last_size,
             self.size,
         );
     }
 };
 
+pub const RenderState = struct {
+    allocator: std.mem.Allocator,
+    last_grid: ?grd.Grid = null,
+    last_size: ?Size = null,
+
+    pub fn init(allocator: std.mem.Allocator) RenderState {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *RenderState) void {
+        if (self.last_grid) |*grid| grid.deinit();
+        self.last_grid = null;
+    }
+
+    fn replaceGrid(self: *RenderState, next_grid: ?grd.Grid) void {
+        if (self.last_grid) |*grid| grid.deinit();
+        self.last_grid = next_grid;
+    }
+};
+
 pub fn renderToWriter(
     writer: *std.Io.Writer,
-    allocator: std.mem.Allocator,
+    state: *RenderState,
     root_widget: anytype,
-    last_grid: *grd.Grid,
-    last_size: *Size,
     size: Size,
 ) !bool {
     if (size.width == 0 or size.height == 0) {
+        // invalidate the rendered size so restoring the viewport forces a full
+        // refresh, even when it returns to the dimensions it had before.
+        state.last_size = size;
         return false;
     }
 
-    // determine if the grid must be refreshed
-    var force_refresh = false;
-    if (last_size.*.width != size.width or last_size.*.height != size.height) {
-        force_refresh = true;
-    } else if (root_widget.getGrid()) |grid| {
-        if (last_grid.size.width != grid.size.width or last_grid.size.height != grid.size.height) {
+    const size_changed = if (state.last_size) |last_size|
+        last_size.width != size.width or last_size.height != size.height
+    else
+        true;
+
+    // a new terminal size changes the root constraint, so rebuild before
+    // deciding which grid transition this frame represents.
+    if (size_changed) {
+        try root_widget.build(state.allocator, .{
+            .min_size = .{ .width = null, .height = null },
+            .max_size = .{ .width = size.width, .height = size.height },
+        }, root_widget.getFocus());
+    }
+
+    const current_grid = root_widget.getGrid();
+    var force_refresh = size_changed;
+    if (!force_refresh) {
+        if (current_grid) |grid| {
+            if (state.last_grid) |last_grid| {
+                force_refresh = last_grid.size.width != grid.size.width or last_grid.size.height != grid.size.height;
+            } else {
+                force_refresh = true;
+            }
+        } else if (state.last_grid != null) {
             force_refresh = true;
         }
     }
 
     var grid_changed = force_refresh;
+    if (!grid_changed) {
+        if (current_grid) |grid| {
+            const last_grid = state.last_grid.?;
+            for (0..grid.size.height) |y| {
+                for (0..grid.size.width) |x| {
+                    const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
+                    const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
+                    if (!cell.eql(last_cell)) {
+                        grid_changed = true;
+                        break;
+                    }
+                }
+                if (grid_changed) break;
+            }
+        }
+    }
+
+    // prepare the next snapshot before changing the screen. the old snapshot
+    // remains valid if allocation or rendering fails.
+    var next_grid: ?grd.Grid = null;
+    if (grid_changed) {
+        if (current_grid) |grid| {
+            next_grid = try grd.Grid.initFromGridOwned(state.allocator, grid, grid.size, 0, 0);
+        }
+    }
+    errdefer if (next_grid) |*grid| grid.deinit();
 
     // start escape code for synchronized output
     // everything in between the start and stop code is printed at once to prevent flickering
     try writer.writeAll("\x1B[?2026h");
+    var sync_open = true;
+    errdefer if (sync_open) {
+        writer.writeAll("\x1B[?2026l") catch {};
+        writer.flush() catch {};
+    };
 
     if (force_refresh) {
-        // rebuild the root widget
-        try root_widget.build(allocator, .{
-            .min_size = .{ .width = null, .height = null },
-            .max_size = .{ .width = size.width, .height = size.height },
-        }, root_widget.getFocus());
         try clearRect(writer, 0, 0, size);
-        last_size.* = size;
 
         // render the grid
-        if (root_widget.getGrid()) |grid| {
-            last_grid.deinit();
-            last_grid.* = try grd.Grid.initFromGridOwned(allocator, grid, grid.size, 0, 0);
+        if (current_grid) |grid| {
             for (0..grid.size.height) |y| {
                 for (0..grid.size.width) |x| {
                     const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
@@ -739,10 +803,11 @@ pub fn renderToWriter(
                 }
             }
         }
-    } else {
-        if (root_widget.getGrid()) |grid| {
-            for (0..last_grid.size.height) |y| {
-                for (0..last_grid.size.width) |x| {
+    } else if (grid_changed) {
+        if (current_grid) |grid| {
+            const last_grid = state.last_grid.?;
+            for (0..grid.size.height) |y| {
+                for (0..grid.size.width) |x| {
                     const cell = grid.cells.items[try grid.cells.at(.{ y, x })];
                     const last_cell = last_grid.cells.items[try last_grid.cells.at(.{ y, x })];
                     if (cell.eql(last_cell)) continue;
@@ -760,18 +825,19 @@ pub fn renderToWriter(
                     }
                 }
             }
-
-            // update last_grid if necessary
-            if (grid_changed) {
-                last_grid.deinit();
-                last_grid.* = try grd.Grid.initFromGridOwned(allocator, grid, grid.size, 0, 0);
-            }
         }
     }
 
     // stop escape code for synchronized output
     try writer.writeAll("\x1B[?2026l");
+    sync_open = false;
     try writer.flush();
+
+    state.last_size = size;
+    if (grid_changed) {
+        state.replaceGrid(next_grid);
+        next_grid = null;
+    }
 
     return grid_changed;
 }
