@@ -787,11 +787,11 @@ fn writeAt(writer: *std.Io.Writer, txt: []const u8, style: grd.Grid.Style, x: us
         styled = true;
     }
     if (style.fg) |c| {
-        try writer.print("\x1B[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
+        try writeControl(writer, "\x1B[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
         styled = true;
     }
     if (style.bg) |c| {
-        try writer.print("\x1B[48;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
+        try writeControl(writer, "\x1B[48;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
         styled = true;
     }
     try writer.writeAll(txt);
@@ -799,7 +799,13 @@ fn writeAt(writer: *std.Io.Writer, txt: []const u8, style: grd.Grid.Style, x: us
 }
 
 pub fn moveCursor(writer: *std.Io.Writer, x: usize, y: usize) !void {
-    _ = try writer.print("\x1B[{};{}H", .{ y + 1, x + 1 });
+    try writeControl(writer, "\x1B[{};{}H", .{ y + 1, x + 1 });
+}
+
+fn writeControl(writer: *std.Io.Writer, comptime format: []const u8, args: anytype) !void {
+    var buffer: [64]u8 = undefined;
+    const control = std.fmt.bufPrint(&buffer, format, args) catch return error.WriteFailed;
+    try writer.writeAll(control);
 }
 
 pub fn enterAlt(writer: *std.Io.Writer) !void {

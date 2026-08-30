@@ -705,6 +705,48 @@ test "StreamTerminal renders a widget tree" {
     );
 }
 
+test "cursor control sequence stays whole at a writer boundary" {
+    const ChunkWriter = struct {
+        output: std.Io.Writer.Allocating,
+        interface: std.Io.Writer,
+
+        fn init(allocator: std.mem.Allocator, buffer: []u8) @This() {
+            return .{
+                .output = .init(allocator),
+                .interface = .{
+                    .vtable = &.{ .drain = drain },
+                    .buffer = buffer,
+                },
+            };
+        }
+
+        fn deinit(self: *@This()) void {
+            self.output.deinit();
+        }
+
+        fn drain(writer: *std.Io.Writer, _: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+            if (splat != 1) return error.WriteFailed;
+            const self: *@This() = @alignCast(@fieldParentPtr("interface", writer));
+            self.output.writer.writeAll(writer.buffered()) catch return error.WriteFailed;
+            self.output.writer.writeByte('|') catch return error.WriteFailed;
+            return writer.consumeAll();
+        }
+    };
+
+    var buffer: [8]u8 = undefined;
+    var writer = ChunkWriter.init(std.testing.allocator, &buffer);
+    defer writer.deinit();
+
+    try writer.interface.writeAll("xxxxxx");
+    try xitui.terminal.moveCursor(&writer.interface, 101, 0);
+    try writer.interface.flush();
+
+    try std.testing.expectEqualStrings(
+        "xxxxxx|\x1B[1;102H|",
+        writer.output.written(),
+    );
+}
+
 test "StreamTerminal init and deinit emit alt-screen lifecycle" {
     const allocator = std.testing.allocator;
     var output: std.Io.Writer.Allocating = .init(allocator);
