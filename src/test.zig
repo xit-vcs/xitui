@@ -700,7 +700,7 @@ test "StreamTerminal renders a widget tree" {
         output.written()[changed_start..],
     );
 
-    const grid = &widget.text_box.box.grid.?;
+    const grid = &widget.text_box.grid.?;
     (try grid.cell(1, 1)).style.inverted = true;
 
     const styled_start = output.written().len;

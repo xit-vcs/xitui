@@ -538,11 +538,17 @@ pub const WrapKind = enum {
 
 pub fn TextBox(comptime Widget: type) type {
     return struct {
-        box: Box(Widget),
+        focus: *Focus,
+        grid: ?Grid,
         options: Options,
-        last_wrap_width: ?usize,
-        content: []const u8,
-        lines: std.ArrayList([]const u8),
+        content: std.ArrayList(u21),
+        lines: std.ArrayList(Line),
+
+        const Line = struct {
+            start: usize,
+            end: usize,
+            width: usize,
+        };
 
         pub const Options = struct {
             border_style: ?draw.BorderStyle,
@@ -558,264 +564,235 @@ pub fn TextBox(comptime Widget: type) type {
             content: []const u8,
             options: Options,
         ) !TextBox(Widget) {
-            const owned_content = try allocator.dupe(u8, content);
-            errdefer allocator.free(owned_content);
+            var codepoints = try decodeContent(allocator, content);
+            errdefer codepoints.deinit(allocator);
 
-            var lines = try splitLines(allocator, owned_content);
-            errdefer {
-                for (lines.items) |line| {
-                    allocator.free(line);
-                }
-                lines.deinit(allocator);
-            }
-
-            var box = try Box(Widget).init(allocator, .{ .border_style = options.border_style, .rounded_corners = options.rounded_corners, .direction = .vert, .label = options.label, .bottom_label = options.bottom_label });
-            errdefer box.deinit(allocator);
-            box.getFocus().kind = .text_box;
-            try resetTextChildren(allocator, &box, lines.items);
+            const focus = try Focus.create(allocator, .text_box);
 
             return .{
-                .box = box,
+                .focus = focus,
+                .grid = null,
                 .options = options,
-                .last_wrap_width = null,
-                .content = owned_content,
-                .lines = lines,
+                .content = codepoints,
+                .lines = .empty,
             };
         }
 
         pub fn deinit(self: *TextBox(Widget), allocator: std.mem.Allocator) void {
-            self.box.deinit(allocator);
-            for (self.lines.items) |line| {
-                allocator.free(line);
-            }
+            self.focus.destroy(allocator);
+            self.clearGrid();
             self.lines.deinit(allocator);
-            allocator.free(self.content);
+            self.content.deinit(allocator);
         }
 
         pub fn setContent(self: *TextBox(Widget), allocator: std.mem.Allocator, content: []const u8) !void {
-            if (std.mem.eql(u8, self.content, content)) return;
-
-            const owned_content = try allocator.dupe(u8, content);
-            const lines = splitLines(allocator, owned_content) catch |err| {
-                allocator.free(owned_content);
-                return err;
-            };
-            for (self.lines.items) |line| allocator.free(line);
-            self.lines.deinit(allocator);
-            self.lines = lines;
-            allocator.free(self.content);
-            self.content = owned_content;
-            self.last_wrap_width = null;
-            try resetTextChildren(allocator, &self.box, self.lines.items);
+            const codepoints = try decodeContent(allocator, content);
+            self.content.deinit(allocator);
+            self.content = codepoints;
         }
 
         pub fn build(self: *TextBox(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
-            if (self.options.wrap_kind != .none) {
-                if (constraint.max_size.width) |max_width| {
-                    const should_rewrap = if (self.last_wrap_width) |last_wrap_width| last_wrap_width != max_width else true;
-                    self.last_wrap_width = max_width;
-
-                    if (should_rewrap) {
-                        const border_size: usize = if (self.options.border_style) |_| 1 else 0;
-                        const inner_width: usize = if (max_width > border_size * 2) max_width - border_size * 2 else 0;
-
-                        for (self.lines.items) |line| allocator.free(line);
-                        self.lines.clearAndFree(allocator);
-
-                        switch (self.options.wrap_kind) {
-                            .none => unreachable,
-                            .char => {
-                                var line: std.ArrayList(u8) = .empty;
-                                errdefer line.deinit(allocator);
-                                var line_w: usize = 0;
-
-                                var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
-                                while (utf8.nextCodepointSlice()) |char| {
-                                    if (std.mem.eql(u8, char, "\n")) {
-                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                        line_w = 0;
-                                    } else {
-                                        const w = wth.cellWidth(try std.unicode.utf8Decode(char));
-                                        // a wide rune that doesn't fit the remaining
-                                        // columns wraps early, leaving the last
-                                        // column blank
-                                        if (line_w > 0 and line_w + w > inner_width) {
-                                            try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                            line_w = 0;
-                                        }
-                                        try line.appendSlice(allocator, char);
-                                        line_w += w;
-                                    }
-
-                                    // wrapping is lazy (a full line breaks
-                                    // only when another char needs room), so
-                                    // a "\n" can't flush an emptied line
-                                    if (std.mem.eql(u8, utf8.peek(1), "")) {
-                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                    }
-                                }
-                            },
-                            .word => {
-                                var line: std.ArrayList(u8) = .empty;
-                                errdefer line.deinit(allocator);
-                                var line_w: usize = 0;
-
-                                var word: std.ArrayList(u8) = .empty;
-                                defer word.deinit(allocator);
-                                var word_w: usize = 0;
-
-                                var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
-                                while (utf8.nextCodepointSlice()) |cp| {
-                                    const is_newline = std.mem.eql(u8, cp, "\n");
-                                    const is_space = std.mem.eql(u8, cp, " ") or std.mem.eql(u8, cp, "\t");
-
-                                    if (is_newline or is_space) {
-                                        try flushPendingWord(allocator, &self.lines, &line, &line_w, &word, &word_w, inner_width);
-                                    }
-
-                                    if (is_newline) {
-                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                        line_w = 0;
-                                    } else if (is_space) {
-                                        // collapse spaces at the start of a line; otherwise keep
-                                        // the separator and drop trailing spaces past the edge.
-                                        if (line_w > 0 and line_w < inner_width) {
-                                            try line.appendSlice(allocator, cp);
-                                            line_w += 1;
-                                        }
-                                    } else {
-                                        try word.appendSlice(allocator, cp);
-                                        word_w += wth.cellWidth(try std.unicode.utf8Decode(cp));
-                                    }
-
-                                    if (std.mem.eql(u8, utf8.peek(1), "")) {
-                                        try flushPendingWord(allocator, &self.lines, &line, &line_w, &word, &word_w, inner_width);
-                                        try self.lines.append(allocator, try line.toOwnedSlice(allocator));
-                                        line_w = 0;
-                                    }
-                                }
-                            },
-                        }
-
-                        // refresh the inner box's children in-place
-                        try resetTextChildren(allocator, &self.box, self.lines.items);
-                    }
-                }
+            self.clearGrid();
+            const border_size: usize = if (self.options.border_style) |_| 1 else 0;
+            if (constraint.max_size.width) |max_width| {
+                if (max_width <= border_size * 2) return;
+            }
+            if (constraint.max_size.height) |max_height| {
+                if (max_height <= border_size * 2) return;
             }
 
-            self.clearGrid();
-            // update border to reflect focus
+            const max_inner_width = if (constraint.max_size.width) |width| width - border_size * 2 else null;
+            const wrap_kind: WrapKind = if (max_inner_width == null) .none else self.options.wrap_kind;
+            try self.rebuildLines(allocator, wrap_kind, max_inner_width);
+
             const focused = root_focus.grandchild_id == self.getFocus().id;
-            self.box.options.border_style = if (self.options.border_style) |base| switch (base) {
+            const border_style: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
                 .single => if (focused) .double else .single,
                 .single_dashed => if (focused) .double_dashed else .single_dashed,
                 .hidden, .double, .double_dashed => base,
             } else null;
-            self.box.options.rounded_corners = self.options.rounded_corners;
-            self.box.options.label = self.options.label;
-            self.box.options.bottom_label = self.options.bottom_label;
-            try self.box.build(allocator, constraint, root_focus);
+
+            const max_lines = if (constraint.max_size.height) |height| height - border_size * 2 else self.lines.items.len;
+            const visible_lines = @min(self.lines.items.len, max_lines);
+
+            var content_width: usize = 0;
+            for (self.lines.items[0..visible_lines]) |line| {
+                const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
+                content_width = @max(content_width, line_width);
+            }
+
+            var width = content_width + border_size * 2;
+            width = @max(width, constraint.min_size.width orelse width);
+            var height = visible_lines + border_size * 2;
+            height = @max(height, constraint.min_size.height orelse height);
+
+            if (border_size > 0) {
+                const label_width = @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label));
+                if (label_width > 0) {
+                    width = @max(width, label_width + border_size * 2);
+                    if (constraint.max_size.width) |max_width| width = @min(width, max_width);
+                }
+            }
+
+            var grid = try Grid.init(allocator, .{ .width = width, .height = height });
+            errdefer grid.deinit();
+
+            for (self.lines.items[0..visible_lines], 0..) |line, y| {
+                const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
+                var x: usize = 0;
+                for (self.content.items[line.start..line.end]) |codepoint| {
+                    const rune_width = wth.cellWidth(codepoint);
+                    if (x + rune_width > line_width) break;
+                    try grid.setRune(x + border_size, y + border_size, codepoint);
+                    x += rune_width;
+                }
+            }
+
+            self.focus.clear();
+            if (border_style) |style| {
+                try draw.border(&grid, style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+            }
+
+            self.grid = grid;
+            if (root_focus == self.getFocus()) root_focus.refocus();
         }
 
         pub fn input(self: *TextBox(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
-            try self.box.input(allocator, key, root_focus);
+            _ = self;
+            _ = allocator;
+            _ = key;
+            _ = root_focus;
         }
 
         pub fn clearGrid(self: *TextBox(Widget)) void {
-            self.box.clearGrid();
+            if (self.grid) |*grid| {
+                grid.deinit();
+                self.grid = null;
+            }
         }
 
         pub fn getGrid(self: TextBox(Widget)) ?Grid {
-            return self.box.getGrid();
+            return self.grid;
         }
 
         pub fn getFocus(self: *TextBox(Widget)) *Focus {
-            return self.box.getFocus();
+            return self.focus;
         }
 
-        // replace the inner box's children with one Text row per line
-        fn resetTextChildren(allocator: std.mem.Allocator, box: *Box(Widget), lines: []const []const u8) !void {
-            for (box.children.values()) |*child| child.widget.deinit(allocator);
-            box.children.clearAndFree(allocator);
-            for (lines) |line| {
-                var text = try Text(Widget).init(allocator, line);
-                errdefer text.deinit(allocator);
-                try box.children.put(allocator, text.getFocus().id, .{ .widget = .{ .text = text }, .rect = null, .min_size = null });
-            }
-        }
-
-        fn splitLines(allocator: std.mem.Allocator, content: []const u8) !std.ArrayList([]const u8) {
-            var lines: std.ArrayList([]const u8) = .empty;
-            errdefer {
-                for (lines.items) |line| allocator.free(line);
-                lines.deinit(allocator);
-            }
-            var line: std.ArrayList(u8) = .empty;
-            errdefer line.deinit(allocator);
-
+        fn decodeContent(allocator: std.mem.Allocator, content: []const u8) !std.ArrayList(u21) {
+            var codepoints: std.ArrayList(u21) = .empty;
+            errdefer codepoints.deinit(allocator);
             var utf8 = (try std.unicode.Utf8View.init(content)).iterator();
-            while (utf8.nextCodepointSlice()) |char| {
-                if (std.mem.eql(u8, char, "\n")) {
-                    const owned = try line.toOwnedSlice(allocator);
-                    lines.append(allocator, owned) catch |err| {
-                        allocator.free(owned);
-                        return err;
-                    };
-                } else {
-                    try line.appendSlice(allocator, char);
-                }
+            while (utf8.nextCodepoint()) |codepoint| {
+                try codepoints.append(allocator, codepoint);
             }
-            const owned = try line.toOwnedSlice(allocator);
-            lines.append(allocator, owned) catch |err| {
-                allocator.free(owned);
-                return err;
-            };
-            return lines;
+            return codepoints;
         }
 
-        fn flushPendingWord(
-            allocator: std.mem.Allocator,
-            lines: *std.ArrayList([]const u8),
-            line: *std.ArrayList(u8),
-            line_w: *usize,
-            word: *std.ArrayList(u8),
-            word_w: *usize,
-            inner_width: usize,
-        ) !void {
-            if (word_w.* == 0) return;
+        fn rebuildLines(self: *TextBox(Widget), allocator: std.mem.Allocator, wrap_kind: WrapKind, max_width: ?usize) !void {
+            self.lines.clearRetainingCapacity();
+            switch (wrap_kind) {
+                .none => try self.wrapChars(allocator, null),
+                .char => try self.wrapChars(allocator, max_width.?),
+                .word => try self.wrapWords(allocator, max_width.?),
+            }
+        }
 
-            if (line_w.* + word_w.* <= inner_width) {
-                try line.appendSlice(allocator, word.items);
-                line_w.* += word_w.*;
-            } else if (word_w.* <= inner_width) {
-                // wrap to a fresh line so the word stays intact
-                if (line_w.* > 0) {
-                    try lines.append(allocator, try line.toOwnedSlice(allocator));
-                    line_w.* = 0;
+        fn wrapChars(self: *TextBox(Widget), allocator: std.mem.Allocator, max_width: ?usize) !void {
+            var start: usize = 0;
+            var width: usize = 0;
+            for (self.content.items, 0..) |codepoint, i| {
+                if (codepoint == '\n') {
+                    try self.appendLine(allocator, start, i, width);
+                    start = i + 1;
+                    width = 0;
+                    continue;
                 }
-                try line.appendSlice(allocator, word.items);
-                line_w.* = word_w.*;
-            } else {
-                // word is longer than a whole line — fall back to char-wrap so
-                // it at least renders rather than disappearing past the edge.
-                if (line_w.* > 0) {
-                    try lines.append(allocator, try line.toOwnedSlice(allocator));
-                    line_w.* = 0;
-                }
-                var w_utf8 = (try std.unicode.Utf8View.init(word.items)).iterator();
-                while (w_utf8.nextCodepointSlice()) |c| {
-                    const w = wth.cellWidth(try std.unicode.utf8Decode(c));
-                    if (line_w.* > 0 and line_w.* + w > inner_width) {
-                        try lines.append(allocator, try line.toOwnedSlice(allocator));
-                        line_w.* = 0;
+
+                const rune_width = wth.cellWidth(codepoint);
+                if (max_width) |limit| {
+                    if (width > 0 and width + rune_width > limit) {
+                        try self.appendLine(allocator, start, i, width);
+                        start = i;
+                        width = 0;
                     }
-                    try line.appendSlice(allocator, c);
-                    line_w.* += w;
+                }
+                width += rune_width;
+            }
+            try self.appendLine(allocator, start, self.content.items.len, width);
+        }
+
+        fn wrapWords(self: *TextBox(Widget), allocator: std.mem.Allocator, max_width: usize) !void {
+            var line_start: usize = 0;
+            var line_end: usize = 0;
+            var line_width: usize = 0;
+            var i: usize = 0;
+
+            while (i < self.content.items.len) {
+                const codepoint = self.content.items[i];
+                if (codepoint == '\n') {
+                    try self.appendLine(allocator, line_start, line_end, line_width);
+                    i += 1;
+                    line_start = i;
+                    line_end = i;
+                    line_width = 0;
+                    continue;
+                }
+
+                if (codepoint == ' ' or codepoint == '\t') {
+                    if (line_width > 0 and line_width < max_width) {
+                        line_end = i + 1;
+                        line_width += 1;
+                    } else if (line_width == 0) {
+                        line_start = i + 1;
+                        line_end = i + 1;
+                    }
+                    i += 1;
+                    continue;
+                }
+
+                const word_start = i;
+                var word_width: usize = 0;
+                while (i < self.content.items.len) : (i += 1) {
+                    const current = self.content.items[i];
+                    if (current == '\n' or current == ' ' or current == '\t') break;
+                    word_width += wth.cellWidth(current);
+                }
+                const word_end = i;
+
+                if (line_width + word_width <= max_width) {
+                    if (line_width == 0) line_start = word_start;
+                    line_end = word_end;
+                    line_width += word_width;
+                } else if (word_width <= max_width) {
+                    if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
+                    line_start = word_start;
+                    line_end = word_end;
+                    line_width = word_width;
+                } else {
+                    if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
+                    var segment_start = word_start;
+                    var segment_width: usize = 0;
+                    for (self.content.items[word_start..word_end], word_start..) |current, index| {
+                        const rune_width = wth.cellWidth(current);
+                        if (segment_width > 0 and segment_width + rune_width > max_width) {
+                            try self.appendLine(allocator, segment_start, index, segment_width);
+                            segment_start = index;
+                            segment_width = 0;
+                        }
+                        segment_width += rune_width;
+                    }
+                    line_start = segment_start;
+                    line_end = word_end;
+                    line_width = segment_width;
                 }
             }
 
-            word.clearRetainingCapacity();
-            word_w.* = 0;
+            try self.appendLine(allocator, line_start, line_end, line_width);
+        }
+
+        fn appendLine(self: *TextBox(Widget), allocator: std.mem.Allocator, start: usize, end: usize, width: usize) !void {
+            try self.lines.append(allocator, .{ .start = start, .end = end, .width = width });
         }
     };
 }
