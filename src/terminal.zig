@@ -184,27 +184,20 @@ pub const Core = switch (builtin.os.tag) {
                 const size = std.unicode.utf8ToUtf16Le(&utf16_buffer, utf8_bytes) catch return error.WriteFailed;
                 const utf16_bytes = utf16_buffer[0..size];
 
-                const num_chars = std.unicode.utf16CountCodepoints(utf16_bytes) catch return error.WriteFailed;
-                var num_chars_written: std.os.windows.DWORD = undefined;
-
                 const out_handle = std.Io.File.stdout().handle;
-                if (WriteConsoleW(out_handle, utf16_bytes.ptr, @intCast(num_chars), &num_chars_written, null) == .FALSE) {
-                    return error.WriteFailed;
-                }
-
-                // return the number of bytes written
-                if (num_chars == num_chars_written) {
-                    return w.consume(utf8_bytes.len);
-                } else {
-                    const text = std.unicode.Utf8View.init(utf8_bytes) catch return error.WriteFailed;
-                    var iter = text.iterator();
-                    var bytes_written: usize = 0;
-                    for (0..num_chars_written) |_| {
-                        const slice = iter.nextCodepointSlice() orelse return error.WriteFailed;
-                        bytes_written += slice.len;
+                // windows counts utf-16 units, not codepoints. finish partial
+                // writes before consuming the original utf-8 buffer.
+                var written: usize = 0;
+                while (written < utf16_bytes.len) {
+                    const remaining = utf16_bytes[written..];
+                    var num_chars_written: std.os.windows.DWORD = undefined;
+                    if (WriteConsoleW(out_handle, remaining.ptr, @intCast(remaining.len), &num_chars_written, null) == .FALSE) {
+                        return error.WriteFailed;
                     }
-                    return w.consume(bytes_written);
+                    if (num_chars_written == 0) return error.WriteFailed;
+                    written += num_chars_written;
                 }
+                return w.consumeAll();
             }
 
             pub fn writer(_: Tty, buffer: []u8) Writer {
