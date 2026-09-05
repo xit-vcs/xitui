@@ -1340,7 +1340,6 @@ pub fn Scroll(comptime Widget: type) type {
             self.bar_h = 0;
 
             if (constraint.max_size.width == 0 or constraint.max_size.height == 0) {
-                self.getFocus().scroll = null;
                 self.getFocus().clear();
                 self.child.clearGrid();
                 return;
@@ -1472,6 +1471,8 @@ pub fn Scroll(comptime Widget: type) type {
         }
 
         pub fn clearGrid(self: *Scroll(Widget)) void {
+            // drop the borrowed content grid before the child can rebuild
+            self.getFocus().scroll = null;
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;

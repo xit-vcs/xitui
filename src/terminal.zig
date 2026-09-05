@@ -799,6 +799,9 @@ pub fn renderToWriter(
                     const cell = (try grid.cell(x, y)).*;
                     if (cell.rune) |rune| {
                         try writeRuneAt(writer, rune, cell.style, x, y, size.height);
+                    } else if (!cell.continuation and !cell.style.eql(.{})) {
+                        // empty cells can still have a background or inversion
+                        try writeAt(writer, " ", cell.style, x, y, size.height);
                     }
                 }
             }
@@ -821,7 +824,7 @@ pub fn renderToWriter(
                     // a continuation column is occupied by the wide rune to
                     // its left, not empty — clearing it would chop the glyph
                     if (!cell.continuation) {
-                        try writeAt(writer, " ", .{}, x, y, size.height);
+                        try writeAt(writer, " ", cell.style, x, y, size.height);
                     }
                 }
             }
