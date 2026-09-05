@@ -976,8 +976,10 @@ pub fn clearRect(writer: *std.Io.Writer, x: usize, y: usize, size: Size) !void {
 
 pub const EscapeParser = struct {
     allocator: std.mem.Allocator,
-    esc_buffer: std.ArrayList(u8),
-    key_queue: std.DoublyLinkedList,
+    esc_buffer: [esc_buffer_size]u8,
+    esc_len: usize,
+    key_queue: std.ArrayList(inp.Key),
+    key_index: usize,
     // the buffered sequence outgrew esc_buffer. its remaining bytes are still
     // consumed up to the terminator, then it reports as one unknown key.
     esc_overflowed: bool,
@@ -989,16 +991,13 @@ pub const EscapeParser = struct {
     // position, mode queries); anything longer is swallowed, not parsed.
     const esc_buffer_size = 128;
 
-    const KeyAndNode = struct {
-        key: inp.Key,
-        node: std.DoublyLinkedList.Node,
-    };
-
     pub fn init(allocator: std.mem.Allocator) !EscapeParser {
         return .{
             .allocator = allocator,
-            .esc_buffer = try std.ArrayList(u8).initCapacity(allocator, esc_buffer_size),
-            .key_queue = std.DoublyLinkedList{},
+            .esc_buffer = undefined,
+            .esc_len = 0,
+            .key_queue = .empty,
+            .key_index = 0,
             .esc_overflowed = false,
             .utf8_buffer = undefined,
             .utf8_len = 0,
@@ -1006,30 +1005,42 @@ pub const EscapeParser = struct {
     }
 
     pub fn deinit(self: *EscapeParser) void {
-        self.esc_buffer.deinit(self.allocator);
-        while (self.key_queue.popFirst()) |node| {
-            const key_and_node: *KeyAndNode = @fieldParentPtr("node", node);
-            self.allocator.destroy(key_and_node);
-        }
+        self.key_queue.deinit(self.allocator);
     }
 
     pub fn popQueued(self: *EscapeParser) ?inp.Key {
-        const node = self.key_queue.popFirst() orelse return null;
-        const key_and_node: *KeyAndNode = @fieldParentPtr("node", node);
-        const key = key_and_node.key;
-        self.allocator.destroy(key_and_node);
+        if (self.key_index == self.key_queue.items.len) return null;
+        const key = self.key_queue.items[self.key_index];
+        self.key_index += 1;
+        if (self.key_index == self.key_queue.items.len) {
+            self.key_queue.clearRetainingCapacity();
+            self.key_index = 0;
+        }
         return key;
     }
 
     fn append(self: *EscapeParser, key: inp.Key) !void {
-        const key_and_node = try self.allocator.create(KeyAndNode);
-        key_and_node.* = .{ .key = key, .node = .{} };
-        self.key_queue.append(&key_and_node.node);
+        // reuse consumed space when the array fills, but wait until at least
+        // half was consumed so alternating reads and writes don't keep copying
+        if (self.key_queue.items.len == self.key_queue.capacity and
+            self.key_index > 0 and self.key_index >= self.key_queue.items.len / 2)
+        {
+            const pending = self.key_queue.items[self.key_index..];
+            std.mem.copyForwards(inp.Key, self.key_queue.items[0..pending.len], pending);
+            self.key_queue.items.len = pending.len;
+            self.key_index = 0;
+        }
+        try self.key_queue.append(self.allocator, key);
+    }
+
+    fn appendScratch(self: *EscapeParser, byte: u8) void {
+        self.esc_buffer[self.esc_len] = byte;
+        self.esc_len += 1;
     }
 
     // drop a partially-buffered escape sequence without reporting anything
     pub fn clearScratch(self: *EscapeParser) void {
-        self.esc_buffer.clearRetainingCapacity();
+        self.esc_len = 0;
         self.esc_overflowed = false;
     }
 
@@ -1074,7 +1085,7 @@ pub const EscapeParser = struct {
     // a caller that knows nothing more is coming resolves it with this. a
     // longer partial sequence is unaffected, since it may still complete.
     pub fn flushEscape(self: *EscapeParser) !void {
-        if (self.esc_buffer.items.len == 1 and self.esc_buffer.items[0] == '\x1B') {
+        if (self.esc_len == 1 and self.esc_buffer[0] == '\x1B') {
             self.clearScratch();
             try self.append(.escape);
         }
@@ -1083,7 +1094,7 @@ pub const EscapeParser = struct {
     // give up on the buffered sequence: a lone ESC was the escape key, and a
     // longer fragment is unparseable and reports as a single unknown key.
     fn abortSequence(self: *EscapeParser) !void {
-        const lone_esc = self.esc_buffer.items.len == 1;
+        const lone_esc = self.esc_len == 1;
         self.clearScratch();
         try self.append(if (lone_esc) .escape else .unknown);
     }
@@ -1100,11 +1111,11 @@ pub const EscapeParser = struct {
 
     fn writeCodepoint(self: *EscapeParser, codepoint: u21) !void {
         // not in an esc sequence
-        if (self.esc_buffer.items.len == 0) {
+        if (self.esc_len == 0) {
             // hold the ESC back: the next byte decides whether it opens a
             // sequence, completes an alt combo, or was the escape key
             if (codepoint == '\x1B') {
-                self.esc_buffer.appendAssumeCapacity('\x1B');
+                self.appendScratch('\x1B');
                 return;
             }
             return self.append(plainKey(codepoint));
@@ -1119,9 +1130,9 @@ pub const EscapeParser = struct {
 
         // the byte after ESC either opens a CSI/SS3 sequence or completes an
         // alt combo; anything non-printable means the ESC was the escape key
-        if (self.esc_buffer.items.len == 1) {
+        if (self.esc_len == 1) {
             if (byte == '[' or byte == 'O') {
-                self.esc_buffer.appendAssumeCapacity(byte);
+                self.appendScratch(byte);
                 return;
             }
             self.clearScratch();
@@ -1129,7 +1140,7 @@ pub const EscapeParser = struct {
             try self.append(.escape);
             // a second ESC opens the next sequence rather than decoding here
             if (byte == '\x1B') {
-                self.esc_buffer.appendAssumeCapacity('\x1B');
+                self.appendScratch('\x1B');
                 return;
             }
             return self.append(plainKey(codepoint));
@@ -1154,9 +1165,9 @@ pub const EscapeParser = struct {
                     'Q' => .{ .f = 2 },
                     'R' => .{ .f = 3 },
                     'S' => .{ .f = 4 },
-                    'M', 'm' => parseSgrMouse(self.esc_buffer.items, byte == 'M') orelse .unknown,
+                    'M', 'm' => parseSgrMouse(self.esc_buffer[0..self.esc_len], byte == 'M') orelse .unknown,
                     '~' => blk: {
-                        var codes = std.mem.splitSequence(u8, self.esc_buffer.items[2..], ";");
+                        var codes = std.mem.splitSequence(u8, self.esc_buffer[2..self.esc_len], ";");
                         const code = codes.first();
                         break :blk if (std.mem.eql(u8, code, "1"))
                             .home
@@ -1206,10 +1217,10 @@ pub const EscapeParser = struct {
             },
             // a sequence too long to buffer can't be parsed, but its bytes
             // must still be consumed so the tail doesn't leak out as keys
-            else => if (self.esc_buffer.items.len == self.esc_buffer.capacity) {
+            else => if (self.esc_len == self.esc_buffer.len) {
                 self.esc_overflowed = true;
             } else {
-                self.esc_buffer.appendAssumeCapacity(byte);
+                self.appendScratch(byte);
             },
         }
     }
