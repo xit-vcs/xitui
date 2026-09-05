@@ -16,6 +16,9 @@ pub const Core = switch (builtin.os.tag) {
         writer: Tty.Writer,
         allocator: std.mem.Allocator,
         last_mouse_buttons: std.os.windows.DWORD,
+        high_surrogate: ?u16 = null,
+        repeat_key: inp.Key = .unknown,
+        repeats_left: u16 = 0,
 
         pub const KEY_EVENT_RECORD = extern struct {
             bKeyDown: std.os.windows.BOOL,
@@ -137,6 +140,13 @@ pub const Core = switch (builtin.os.tag) {
             }
         }
 
+        fn ctrlHandler(event: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
+            const CTRL_C_EVENT = 0;
+            if (event != CTRL_C_EVENT) return .FALSE;
+            quit.store(true, .monotonic);
+            return .TRUE;
+        }
+
         pub const WaitForSingleObjectError = error{
             WaitAbandoned,
             WaitTimeOut,
@@ -174,30 +184,46 @@ pub const Core = switch (builtin.os.tag) {
                 interface: std.Io.Writer,
             };
 
-            fn drain(w: *std.Io.Writer, _: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-                // splat isn't supported for now
-                if (splat != 1) return error.WriteFailed;
-
-                const utf8_bytes = w.buffered();
-
-                var utf16_buffer = [_]u16{0} ** write_buffer_size;
-                const size = std.unicode.utf8ToUtf16Le(&utf16_buffer, utf8_bytes) catch return error.WriteFailed;
-                const utf16_bytes = utf16_buffer[0..size];
-
-                const out_handle = std.Io.File.stdout().handle;
-                // windows counts utf-16 units, not codepoints. finish partial
-                // writes before consuming the original utf-8 buffer.
-                var written: usize = 0;
-                while (written < utf16_bytes.len) {
-                    const remaining = utf16_bytes[written..];
-                    var num_chars_written: std.os.windows.DWORD = undefined;
-                    if (WriteConsoleW(out_handle, remaining.ptr, @intCast(remaining.len), &num_chars_written, null) == .FALSE) {
-                        return error.WriteFailed;
-                    }
-                    if (num_chars_written == 0) return error.WriteFailed;
-                    written += num_chars_written;
+            fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+                if (w.end > 0) {
+                    try writeUtf8(w.buffered());
+                    return w.consumeAll();
                 }
-                return w.consumeAll();
+                var consumed: usize = 0;
+                for (data, 0..) |bytes, i| {
+                    const count = if (i + 1 == data.len) splat else 1;
+                    for (0..count) |_| {
+                        try writeUtf8(bytes);
+                        consumed += bytes.len;
+                    }
+                }
+                return consumed;
+            }
+
+            fn writeUtf8(bytes: []const u8) std.Io.Writer.Error!void {
+                const out_handle = std.Io.File.stdout().handle;
+                var utf16_buffer: [write_buffer_size]u16 = undefined;
+                var start: usize = 0;
+                while (start < bytes.len) {
+                    var end = start + @min(bytes.len - start, write_buffer_size);
+                    // keep each utf-8 character together at the chunk boundary
+                    while (end < bytes.len and end > start and bytes[end] & 0xc0 == 0x80) end -= 1;
+                    if (end == start) return error.WriteFailed;
+                    const size = std.unicode.utf8ToUtf16Le(&utf16_buffer, bytes[start..end]) catch return error.WriteFailed;
+                    const utf16_bytes = utf16_buffer[0..size];
+                    // windows counts utf-16 units, not codepoints
+                    var written: usize = 0;
+                    while (written < utf16_bytes.len) {
+                        const remaining = utf16_bytes[written..];
+                        var num_chars_written: std.os.windows.DWORD = undefined;
+                        if (WriteConsoleW(out_handle, remaining.ptr, @intCast(remaining.len), &num_chars_written, null) == .FALSE) {
+                            return error.WriteFailed;
+                        }
+                        if (num_chars_written == 0) return error.WriteFailed;
+                        written += num_chars_written;
+                    }
+                    start = end;
+                }
             }
 
             pub fn writer(_: Tty, buffer: []u8) Writer {
@@ -252,84 +278,99 @@ pub const Core = switch (builtin.os.tag) {
         }
 
         fn cook(self: *Core) !void {
+            // restore the modes even if writing the cleanup sequences fails
+            defer {
+                _ = SetConsoleMode(std.Io.File.stdout().handle, self.tty.old_out_mode);
+                _ = SetConsoleMode(std.Io.File.stdin().handle, self.tty.old_in_mode);
+            }
             try clearStyle(&self.writer.interface);
             try leaveAlt(&self.writer.interface);
             try showCursor(&self.writer.interface);
             try attributeReset(&self.writer.interface);
             try self.writer.interface.flush();
+        }
 
-            const out_handle = std.Io.File.stdout().handle;
-            _ = SetConsoleMode(out_handle, self.tty.old_out_mode);
-            const in_handle = std.Io.File.stdin().handle;
-            _ = SetConsoleMode(in_handle, self.tty.old_in_mode);
+        fn decodeKeyEvent(self: *Core, event: KEY_EVENT_RECORD) ?inp.Key {
+            if (event.bKeyDown == .FALSE) return null;
+            const shifted = event.dwControlKeyState & 0x0010 != 0;
+            const unit = event.uChar.UnicodeChar;
+            if (unit != 0) {
+                if (std.unicode.utf16IsHighSurrogate(unit)) {
+                    self.high_surrogate = unit;
+                    return null;
+                }
+                const high = self.high_surrogate;
+                self.high_surrogate = null;
+                const cp: u21 = if (std.unicode.utf16IsLowSurrogate(unit)) blk: {
+                    const first = high orelse return .unknown;
+                    break :blk std.unicode.utf16DecodeSurrogatePair(&.{ first, unit }) catch unreachable;
+                } else unit;
+
+                if (cp == 8 or cp == 127) return .backspace;
+                if (cp == 13 or cp == 10) return .enter;
+                if (cp == 9) return if (shifted) .back_tab else .tab;
+                if (cp == 0x1B) return .escape;
+                if (cp >= 0x01 and cp <= 0x1A) return .{ .ctrl = @intCast(cp - 0x01 + 'a') };
+                // altgr reports right alt + left ctrl and must stay plain text
+                const alt_pressed = event.dwControlKeyState & (0x0001 | 0x0002) != 0;
+                const ctrl_pressed = event.dwControlKeyState & (0x0004 | 0x0008) != 0;
+                if (alt_pressed and !ctrl_pressed and cp >= 0x20 and cp < 0x7F) {
+                    return .{ .alt = @intCast(cp) };
+                }
+                return .{ .codepoint = cp };
+            }
+
+            return switch (event.wVirtualKeyCode) {
+                0x09 => if (shifted) .back_tab else .tab,
+                0x21 => .page_up,
+                0x22 => .page_down,
+                0x23 => .end,
+                0x24 => .home,
+                0x25 => .arrow_left,
+                0x26 => .arrow_up,
+                0x27 => .arrow_right,
+                0x28 => .arrow_down,
+                0x0D => .enter,
+                0x2D => .insert,
+                0x2E => .delete,
+                // F1-F12
+                0x70...0x7B => .{ .f = @intCast(event.wVirtualKeyCode - 0x70 + 1) },
+                else => null,
+            };
         }
 
         fn readKey(self: *Core, _: std.Io, blocking: bool) !?inp.Key {
-            const timeout: std.os.windows.DWORD = if (blocking) INFINITE else 0;
+            const timeout: std.os.windows.DWORD = if (blocking) 100 else 0;
 
-            while (true) {
+            while (!quit.load(.monotonic)) {
+                if (self.repeats_left > 0) {
+                    self.repeats_left -= 1;
+                    return self.repeat_key;
+                }
                 const in_handle = std.Io.File.stdin().handle;
                 var event_buffer: [1]INPUT_RECORD = undefined;
                 var num_events_read: std.os.windows.DWORD = undefined;
                 // exit early if there is no event ready to read
                 waitForSingleObject(in_handle, timeout) catch |err| switch (err) {
                     error.WaitAbandoned => return null,
-                    error.WaitTimeOut => return null,
+                    error.WaitTimeOut => if (blocking) continue else return null,
                     error.Unexpected => |e| return e,
                 };
+                if (quit.load(.monotonic)) return null;
                 // read events from the buffer
                 if (ReadConsoleInputW(in_handle, @ptrCast(&event_buffer), event_buffer.len, &num_events_read) == .FALSE) {
                     return error.FailedToReadConsoleInputW;
                 }
+                if (num_events_read == 0) continue;
                 const event_type = event_buffer[0].EventType;
                 const event = event_buffer[0].Event;
                 switch (event_type) {
                     // KEY_EVENT
                     0x0001 => {
-                        // ignore key up events
-                        if (event.KeyEvent.bKeyDown == .FALSE) {
-                            continue;
-                        }
-                        // if unicode char is not zero, return the codepoint
-                        if (event.KeyEvent.uChar.UnicodeChar > 0) {
-                            var utf8_buffer = [_]u8{0} ** 4;
-                            const size = try std.unicode.utf16LeToUtf8(&utf8_buffer, &[_]u16{event.KeyEvent.uChar.UnicodeChar});
-                            const cp = try std.unicode.utf8Decode(utf8_buffer[0..size]);
-                            if (cp == 8 or cp == 127) return .backspace;
-                            if (cp == 13 or cp == 10) return .enter;
-                            if (cp == 9) return .tab;
-                            if (cp == 0x1B) return .escape;
-                            // remaining C0 control chars are ctrl+letter (0x01 == ctrl+a)
-                            if (cp >= 0x01 and cp <= 0x1A) return .{ .ctrl = @intCast(cp - 0x01 + 'a') };
-                            // alt+key — but not when a ctrl bit is also set,
-                            // because AltGr reports as right alt + left ctrl
-                            // and must keep producing plain codepoints
-                            const alt_pressed = event.KeyEvent.dwControlKeyState & (0x0001 | 0x0002) != 0;
-                            const ctrl_pressed = event.KeyEvent.dwControlKeyState & (0x0004 | 0x0008) != 0;
-                            if (alt_pressed and !ctrl_pressed and cp >= 0x20 and cp < 0x7F) {
-                                return .{ .alt = @intCast(cp) };
-                            }
-                            return .{ .codepoint = cp };
-                        }
-                        // otherwise it's a non-printable key. key codes are listed here:
-                        // https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
-                        else {
-                            return switch (event.KeyEvent.wVirtualKeyCode) {
-                                0x21 => .page_up,
-                                0x22 => .page_down,
-                                0x23 => .end,
-                                0x24 => .home,
-                                0x25 => .arrow_left,
-                                0x26 => .arrow_up,
-                                0x27 => .arrow_right,
-                                0x28 => .arrow_down,
-                                0x0D => .enter,
-                                0x2D => .insert,
-                                0x2E => .delete,
-                                // F1-F12
-                                0x70...0x7B => .{ .f = @intCast(event.KeyEvent.wVirtualKeyCode - 0x70 + 1) },
-                                else => continue,
-                            };
+                        if (self.decodeKeyEvent(event.KeyEvent)) |key| {
+                            self.repeat_key = key;
+                            self.repeats_left = @max(1, event.KeyEvent.wRepeatCount) - 1;
+                            return key;
                         }
                     },
                     // MOUSE_EVENT
@@ -396,6 +437,7 @@ pub const Core = switch (builtin.os.tag) {
                     else => return error.UnrecognizedEventType,
                 }
             }
+            return null;
         }
     },
     else => struct {
@@ -510,21 +552,9 @@ pub const Terminal = struct {
                 try self.core.uncook();
                 errdefer self.core.cook() catch {};
 
-                const handler = struct {
-                    fn run(fdw_ctrl_type: std.os.windows.DWORD) callconv(.c) std.os.windows.BOOL {
-                        const CTRL_C_EVENT: std.os.windows.DWORD = 0;
-
-                        switch (fdw_ctrl_type) {
-                            CTRL_C_EVENT => {
-                                quit.store(true, .monotonic);
-                                return .TRUE;
-                            },
-                            else => {},
-                        }
-                        return .FALSE;
-                    }
-                }.run;
-                try Core.setConsoleCtrlHandler(handler, true);
+                quit.store(false, .monotonic);
+                try Core.setConsoleCtrlHandler(Core.ctrlHandler, true);
+                errdefer Core.setConsoleCtrlHandler(Core.ctrlHandler, false) catch {};
 
                 try self.core.writer.interface.writeAll("\x1B[?1049h"); // clear screen
                 try self.core.writer.interface.flush();
@@ -597,6 +627,7 @@ pub const Terminal = struct {
         self.render_state.deinit();
         switch (builtin.os.tag) {
             .windows => {
+                Core.setConsoleCtrlHandler(Core.ctrlHandler, false) catch {};
                 self.core.cook() catch {};
                 self.core.allocator.free(self.core.write_buffer);
             },
