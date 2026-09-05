@@ -1415,34 +1415,19 @@ pub fn Scroll(comptime Widget: type) type {
                 const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
                 self.clampOffsets(child_grid.size, content_w, content_h);
 
-                if (reserve_w == 0 and reserve_h == 0) {
-                    self.grid = try Grid.initFromGrid(allocator, child_grid, .{
-                        .width = content_w,
-                        .height = content_h,
-                    }, self.x, self.y);
-                } else {
-                    // draw the scrolled content into a grid that's one wider
-                    // and/or one taller than the content area, then paint the
-                    // bar(s) into the reserved column/row.
-                    var content = try Grid.initFromGrid(allocator, child_grid, .{
-                        .width = content_w,
-                        .height = content_h,
-                    }, self.x, self.y);
-                    defer content.deinit();
-                    var full = try Grid.init(allocator, .{
-                        .width = content_w + reserve_w,
-                        .height = content_h + reserve_h,
-                    });
-                    errdefer full.deinit();
-                    try full.drawGrid(content, 0, 0);
-                    if (reserve_w == 1) {
-                        try draw.scrollBarVert(&full, content_w, 0, content_h, child_grid.size.height, content_h, self.y);
-                    }
-                    if (reserve_h == 1) {
-                        try draw.scrollBarHoriz(&full, 0, content_h, content_w, child_grid.size.width, content_w, self.x);
-                    }
-                    self.grid = full;
+                var grid = try Grid.init(allocator, .{
+                    .width = content_w + reserve_w,
+                    .height = content_h + reserve_h,
+                });
+                errdefer grid.deinit();
+                grid.drawGridView(child_grid, .{ .width = content_w, .height = content_h }, self.x, self.y);
+                if (reserve_w == 1) {
+                    try draw.scrollBarVert(&grid, content_w, 0, content_h, child_grid.size.height, content_h, self.y);
                 }
+                if (reserve_h == 1) {
+                    try draw.scrollBarHoriz(&grid, 0, content_h, content_w, child_grid.size.width, content_w, self.x);
+                }
+                self.grid = grid;
 
                 // the child registered its focusable descendants at content-space
                 // coordinates; shift them into the viewport (by the scroll offset)

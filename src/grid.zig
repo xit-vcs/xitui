@@ -79,14 +79,26 @@ pub const Grid = struct {
 
     pub fn initFromGrid(allocator: std.mem.Allocator, grid: Grid, size: layout.Size, grid_x: isize, grid_y: isize) !Grid {
         var new_grid = try Grid.init(allocator, size);
-        errdefer new_grid.deinit();
+        new_grid.drawGridView(grid, size, grid_x, grid_y);
+        return new_grid;
+    }
+
+    // copy a source view into the top-left corner; the view size can
+    // exclude space reserved for scroll bars
+    pub fn drawGridView(self: *Grid, grid: Grid, view_size: layout.Size, grid_x: isize, grid_y: isize) void {
+        const size: layout.Size = .{
+            .width = @min(view_size.width, self.size.width),
+            .height = @min(view_size.height, self.size.height),
+        };
         const ugrid_x: usize = if (grid_x < 0) 0 else @intCast(grid_x);
         const ugrid_y: usize = if (grid_y < 0) 0 else @intCast(grid_y);
         var dest_y: usize = if (grid_y < 0) @abs(grid_y) else 0;
         for (ugrid_y..ugrid_y + size.height) |source_y| {
+            if (dest_y >= size.height) break;
             var dest_x: usize = if (grid_x < 0) @abs(grid_x) else 0;
             for (ugrid_x..ugrid_x + size.width) |source_x| {
-                if (new_grid.cell(dest_x, dest_y)) |dest_cell| {
+                if (dest_x >= size.width) break;
+                if (self.cell(dest_x, dest_y)) |dest_cell| {
                     if (grid.cell(source_x, source_y)) |source_cell| {
                         var src = source_cell.*;
                         // a wide pair split by the view's left or right edge
@@ -101,6 +113,7 @@ pub const Grid = struct {
                                 }
                             } else |_| {}
                         }
+                        self.blankPartner(dest_x, dest_y);
                         dest_cell.* = src;
                     } else |_| {
                         break;
@@ -112,7 +125,6 @@ pub const Grid = struct {
             }
             dest_y += 1;
         }
-        return new_grid;
     }
 
     pub fn deinit(self: *Grid) void {
