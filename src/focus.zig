@@ -33,7 +33,7 @@ pub const Focus = struct {
     kind: FocusKind,
     child_id: ?usize,
     grandchild_id: ?usize,
-    focusable: bool,
+    mode: Mode,
     children: std.AutoArrayHashMapUnmanaged(usize, Child),
     scroll: ?ScrollInfo,
     // owner-bumped when this node's content is replaced (not merely restyled).
@@ -41,13 +41,21 @@ pub const Focus = struct {
     // web renderer can reset the native scroll position only on real changes.
     version: u64,
 
+    pub const Mode = enum {
+        none,
+        // mouse target only; keyboard focus descends to the selected child
+        mouse,
+        // keyboard and mouse target
+        all,
+    };
+
     fn init(kind: FocusKind) Focus {
         return .{
             .id = next_id.fetchAdd(1, .monotonic),
             .kind = kind,
             .child_id = null,
             .grandchild_id = null,
-            .focusable = false,
+            .mode = .none,
             .children = .empty,
             .scroll = null,
             .version = 0,
@@ -90,11 +98,36 @@ pub const Focus = struct {
         self.children.clearRetainingCapacity();
     }
 
+    pub const Hit = struct {
+        id: usize,
+        kind: enum { control, background },
+    };
+
+    // controls take priority over clickable containers; background hits only
+    // restore the container's selected descendant and must not activate it
+    pub fn hitTest(self: *const Focus, x: usize, y: usize) ?Hit {
+        var background: ?Hit = null;
+        var iter = self.children.iterator();
+        while (iter.next()) |entry| {
+            const child = entry.value_ptr.*;
+            if (child.focus.mode == .none) continue;
+            const r = child.rect;
+            if (x < r.x or y < r.y or x >= r.x + r.size.width or y >= r.y + r.size.height) continue;
+
+            if (child.focus.mode == .mouse and (child.focus.child_id != null or child.focus.children.count() > 0)) {
+                background = .{ .id = entry.key_ptr.*, .kind = .background };
+            } else {
+                return .{ .id = entry.key_ptr.*, .kind = .control };
+            }
+        }
+        return background;
+    }
+
     pub fn setFocus(self: *Focus, grandchild_id: usize) void {
         var id = grandchild_id;
         // descend toward the nearest focusable along the selected-child chain
         while (self.children.get(id)) |child| {
-            if (child.focus.focusable) break;
+            if (child.focus.mode == .all) break;
             const next_child_id = child.focus.child_id orelse break;
             // the selected child exists but wasn't laid out this build — a flex
             // child a Box dropped for lack of room, whose focus subtree was
@@ -112,12 +145,12 @@ pub const Focus = struct {
         // (e.g. an empty list) is not — leave focus untouched rather than
         // stranding it somewhere that can't take input.
         const has_dropped_child = if (target.focus.child_id) |c| !self.children.contains(c) else false;
-        if (!target.focus.focusable and !has_dropped_child) return;
+        if (target.focus.mode != .all and !has_dropped_child) return;
 
         // land the cursor only on a focusable target; for a dropped subtree leave
         // grandchild_id where it is and let the post-build recovery move it once
         // the subtree is laid out.
-        if (target.focus.focusable) self.grandchild_id = id;
+        if (target.focus.mode == .all) self.grandchild_id = id;
 
         // select `id` up the chain so every ancestor (and any too-narrow Box)
         // builds toward it next time
