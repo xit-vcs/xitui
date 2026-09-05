@@ -470,15 +470,16 @@ pub const Core = switch (builtin.os.tag) {
                 const buffer_size = 32;
                 var buffer: [buffer_size]u8 = undefined;
                 const size = self.tty.readStreaming(io, &.{&buffer}) catch |err| switch (err) {
-                    error.EndOfStream => return null,
+                    error.EndOfStream => 0,
                     else => |e| return e,
                 };
-                if (size == 0) return null;
-
-                try self.parser.queueBytes(buffer[0..size]);
-                // the tty hands us a whole sequence in one read, so an ESC
-                // still pending was the escape key, not a split sequence
-                try self.parser.flushEscape();
+                if (size == 0) {
+                    // the timed read went idle; resolve a lone escape only
+                    // after giving the rest of a split sequence time to arrive
+                    try self.parser.flushEscape();
+                } else {
+                    try self.parser.queueBytes(buffer[0..size]);
+                }
                 return self.parser.popQueued();
             }
         }
