@@ -94,7 +94,7 @@ pub const Grid = struct {
                         // drawn
                         if (src.continuation and source_x == ugrid_x) {
                             src = .{ .rune = ' ', .style = src.style };
-                        } else if (source_x + 1 == ugrid_x + size.width) {
+                        } else if (dest_x + 1 == size.width) {
                             if (grid.cell(source_x + 1, source_y)) |next_cell| {
                                 if (next_cell.continuation) {
                                     src = .{ .rune = ' ', .style = src.style };

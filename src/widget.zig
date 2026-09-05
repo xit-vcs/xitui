@@ -297,35 +297,31 @@ pub fn Box(comptime Widget: type) type {
                     }
                 }
 
-                // reserve room for the children built after this one so a greedy
-                // child (e.g. a Spacer that fills its max) leaves space for their
-                // minimums rather than starving them. this runs for every child: a
-                // child with no min_size of its own reserves as if that minimum
-                // were 0, so a fill widget needn't declare a min just to be a
-                // well-behaved sibling.
+                // leave room for the minimum sizes of the children built next.
+                // only reserve space along the main axis; children share the
+                // cross axis. a child without a minimum is treated as size 0.
                 var expected_remaining_width_maybe = remaining_width_maybe;
                 var expected_remaining_height_maybe = remaining_height_maybe;
                 var child_min_size = layout_child.min_size;
-                if (expected_remaining_width_maybe) |*expected_remaining_width| {
-                    const self_min_width = child_min_size.width orelse 0;
+                const expected_remaining_main = switch (self.options.direction) {
+                    .horiz => &expected_remaining_width_maybe,
+                    .vert => &expected_remaining_height_maybe,
+                };
+                const self_min_main = switch (self.options.direction) {
+                    .horiz => child_min_size.width,
+                    .vert => child_min_size.height,
+                } orelse 0;
+                if (expected_remaining_main.*) |*remaining| {
                     for (layout_order.items[sorted_child_index + 1 ..]) |next_layout_child| {
                         const next_child = &self.children.values()[next_layout_child.index];
                         if (next_child.hidden) continue;
-                        if (next_layout_child.min_size.width) |next_min_width| {
-                            if (expected_remaining_width.* >= self_min_width + next_min_width) {
-                                expected_remaining_width.* -= next_min_width;
-                            }
-                        }
-                    }
-                }
-                if (expected_remaining_height_maybe) |*expected_remaining_height| {
-                    const self_min_height = child_min_size.height orelse 0;
-                    for (layout_order.items[sorted_child_index + 1 ..]) |next_layout_child| {
-                        const next_child = &self.children.values()[next_layout_child.index];
-                        if (next_child.hidden) continue;
-                        if (next_layout_child.min_size.height) |next_min_height| {
-                            if (expected_remaining_height.* >= self_min_height + next_min_height) {
-                                expected_remaining_height.* -= next_min_height;
+                        const next_min_main = switch (self.options.direction) {
+                            .horiz => next_layout_child.min_size.width,
+                            .vert => next_layout_child.min_size.height,
+                        };
+                        if (next_min_main) |minimum| {
+                            if (remaining.* >= self_min_main + minimum) {
+                                remaining.* -= minimum;
                             }
                         }
                     }
@@ -993,6 +989,9 @@ pub const TextInput = struct {
 
         const border_size: usize = if (effective_border) |_| 1 else 0;
         const height: usize = 1 + border_size * 2;
+        if (constraint.max_size.height) |max_height| {
+            if (max_height < height) return;
+        }
 
         // width is fixed at the option's visible_width (longer content
         // scrolls horizontally inside it), or fills the constraint. an
@@ -1340,6 +1339,13 @@ pub fn Scroll(comptime Widget: type) type {
             self.bar_w = 0;
             self.bar_h = 0;
 
+            if (constraint.max_size.width == 0 or constraint.max_size.height == 0) {
+                self.getFocus().scroll = null;
+                self.getFocus().clear();
+                self.child.clearGrid();
+                return;
+            }
+
             // lay the child out at the full viewport first so we can tell whether
             // it actually overflows. a bar (and the column/row it steals) is only
             // worth showing when the content doesn't fit.
@@ -1384,8 +1390,10 @@ pub fn Scroll(comptime Widget: type) type {
                 var reserve_h: usize = 0;
                 if (self.options.show_bar) {
                     for (0..2) |_| {
-                        reserve_w = if (can_vert and measured.size.height > vp_h -| reserve_h) 1 else 0;
-                        reserve_h = if (can_horiz and measured.size.width > vp_w -| reserve_w) 1 else 0;
+                        // hide the bar if there isn't room for it and at
+                        // least one column or row of content
+                        reserve_w = if (can_vert and vp_w > 1 and measured.size.height > vp_h -| reserve_h) 1 else 0;
+                        reserve_h = if (can_horiz and vp_h > 1 and measured.size.width > vp_w -| reserve_w) 1 else 0;
                     }
                 }
 
