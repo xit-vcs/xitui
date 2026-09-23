@@ -38,6 +38,8 @@ pub fn main() !void {
     // init term
     var terminal = try term.Terminal.init(io, allocator);
     defer terminal.deinit(io);
+    // fill the whole screen, including areas no widget covers
+    terminal.setBackground(.{ .rgb = .{ .r = 0x1e, .g = 0x22, .b = 0x2a } });
 
     // set term as active so it will be properly cooked
     // when a panic/segfault happens
@@ -85,6 +87,8 @@ pub fn main() !void {
 
 const WidgetList = struct {
     scroll: wgt.Scroll(Widget),
+    // id of the horizontal box of tabs within the list
+    tabs_id: usize,
 
     pub fn init(allocator: std.mem.Allocator) !WidgetList {
         var self = blk: {
@@ -96,6 +100,7 @@ const WidgetList = struct {
 
             break :blk WidgetList{
                 .scroll = scroll,
+                .tabs_id = undefined,
             };
         };
         errdefer self.deinit(allocator);
@@ -121,6 +126,34 @@ const WidgetList = struct {
             errdefer text_input.deinit(allocator);
             text_input.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
+        }
+
+        {
+            var text_box = try wgt.TextBox.initSpans(allocator, &.{
+                .{ .text = "styled ", .style = .{ .fg = .{ .ansi = .red }, .bold = true } },
+                .{ .text = "text ", .style = .{ .fg = .{ .ansi = .blue }, .italic = true } },
+                .{ .text = "in a ", .style = .{ .fg = .{ .ansi = .green } } },
+                .{ .text = "TextBox", .style = .{ .fg = .{ .rgb = .{ .r = 0, .g = 0, .b = 0 } }, .bg = .{ .rgb = .{ .r = 0xe5, .g = 0xc0, .b = 0x7b } }, .underline = true } },
+            }, .{ .border_style = .single, .wrap_kind = .word });
+            errdefer text_box.deinit(allocator);
+            text_box.getFocus().mode = .all;
+            try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
+        }
+
+        {
+            // tabs: left/right switch between them, and the selected one is
+            // drawn inverted (see build)
+            var tabs = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .horiz });
+            errdefer tabs.deinit(allocator);
+            for ([_][]const u8{ "files", "history", "settings" }) |name| {
+                var tab = try wgt.TextBox.init(allocator, name, .{ .border_style = .single, .wrap_kind = .none });
+                errdefer tab.deinit(allocator);
+                tab.getFocus().mode = .all;
+                try tabs.children.put(allocator, tab.getFocus().id, .{ .widget = .{ .text_box = tab }, .rect = null, .min_size = null });
+            }
+            tabs.getFocus().child_id = tabs.children.keys()[0];
+            self.tabs_id = tabs.getFocus().id;
+            try inner_box.children.put(allocator, tabs.getFocus().id, .{ .widget = .{ .box = tabs }, .rect = null, .min_size = null });
         }
 
         {
@@ -185,6 +218,13 @@ const WidgetList = struct {
 
     pub fn build(self: *WidgetList, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
         self.clearGrid();
+        // invert the selected tab, mirroring how an app marks the active one
+        if (self.scroll.child.box.children.getPtr(self.tabs_id)) |tabs_child| {
+            const tabs = &tabs_child.widget.box;
+            for (tabs.children.values()) |*tab| {
+                tab.widget.text_box.options.inverted = tabs.getFocus().child_id == tab.widget.getFocus().id;
+            }
+        }
         try self.scroll.build(allocator, constraint, root_focus);
     }
 
@@ -216,6 +256,27 @@ const WidgetList = struct {
                             return;
                         },
                         else => {},
+                    }
+                }
+
+                // left/right switch tabs
+                if (focused.* == .box and children.keys()[current_index] == self.tabs_id) {
+                    const tabs = &focused.box;
+                    if (tabs.getFocus().child_id) |tab_id| {
+                        if (tabs.children.getIndex(tab_id)) |tab_index| {
+                            var next = tab_index;
+                            switch (key) {
+                                .arrow_left => next -|= 1,
+                                .arrow_right => if (next + 1 < tabs.children.count()) {
+                                    next += 1;
+                                },
+                                else => {},
+                            }
+                            if (next != tab_index) {
+                                root_focus.setFocus(tabs.children.keys()[next]);
+                                return;
+                            }
+                        }
                     }
                 }
 
