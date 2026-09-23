@@ -3,6 +3,7 @@
 const std = @import("std");
 const inp = @import("./input.zig");
 const term = @import("./terminal.zig");
+const grd = @import("./grid.zig");
 const Size = @import("./layout.zig").Size;
 
 pub const StreamTerminal = struct {
@@ -94,6 +95,11 @@ pub const StreamTerminal = struct {
             return .{ .event = .resize };
         }
         return self.parser.popQueued();
+    }
+
+    // fill the terminal behind any cell with no bg of its own
+    pub fn setBackground(self: *StreamTerminal, background: ?grd.Grid.Color) void {
+        self.render_state.background = background;
     }
 
     pub fn render(self: *StreamTerminal, root_widget: anytype) !bool {

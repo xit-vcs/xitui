@@ -698,6 +698,11 @@ pub const Terminal = struct {
         self.core.cook() catch {};
     }
 
+    // fill the terminal behind any cell with no bg of its own
+    pub fn setBackground(self: *Terminal, background: ?grd.Grid.Color) void {
+        self.render_state.background = background;
+    }
+
     pub fn render(self: *Terminal, root_widget: anytype) !bool {
         self.size = self.getSize() catch |err| {
             // ignore error if terminal is quitting (SIGINT was sent)
@@ -721,6 +726,10 @@ pub const RenderState = struct {
     allocator: std.mem.Allocator,
     last_grid: ?grd.Grid = null,
     last_size: ?Size = null,
+    // whole-terminal background, shown under any cell whose bg is null.
+    // changing it forces a full refresh on the next render.
+    background: ?grd.Grid.Color = null,
+    last_background: ?grd.Grid.Color = null,
 
     pub fn init(allocator: std.mem.Allocator) RenderState {
         return .{ .allocator = allocator };
@@ -765,7 +774,8 @@ pub fn renderToWriter(
     }
 
     const current_grid = root_widget.getGrid();
-    var force_refresh = size_changed;
+    const background_changed = !std.meta.eql(state.background, state.last_background);
+    var force_refresh = size_changed or background_changed;
     // only allocate a snapshot when its dimensions change
     if (current_grid) |grid| {
         const needs_snapshot = if (state.last_grid) |last_grid|
@@ -787,6 +797,7 @@ pub fn renderToWriter(
     errdefer {
         // a partial frame needs a full redraw, including reused snapshot cells
         state.last_size = null;
+        state.last_background = null;
         if (started) {
             attributeReset(writer) catch {};
             writer.writeAll("\x1B[?2026l") catch {};
@@ -797,6 +808,12 @@ pub fn renderToWriter(
     if (force_refresh) {
         started = true;
         try writer.writeAll("\x1B[?2026h");
+        // paint the cleared spaces with the terminal background, so empty
+        // default cells can still be skipped below
+        if (state.background) |bg| {
+            style = .{ .bg = bg };
+            try writeStyle(writer, style);
+        }
         try clearRect(writer, 0, 0, size);
     }
 
@@ -817,6 +834,8 @@ pub fn renderToWriter(
 
                     if (cell.continuation) continue;
                     if (force_refresh and cell.rune == null and cell.style.eql(.{})) continue;
+                    var cell_style = cell.style;
+                    cell_style.bg = cell_style.bg orelse state.background;
                     // off-screen cursor moves clamp to the edge
                     if (x >= size.width or y >= size.height) continue;
                     var rune = cell.rune orelse ' ';
@@ -832,16 +851,10 @@ pub fn renderToWriter(
                     if (!advances or cursor_x != x) {
                         try moveCursor(writer, x, y);
                     }
-                    if (!style.eql(cell.style)) {
+                    if (!style.eql(cell_style)) {
                         if (!style.eql(.{})) try attributeReset(writer);
-                        if (cell.style.inverted) try writer.writeAll("\x1B[7m");
-                        if (cell.style.fg) |c| {
-                            try writeControl(writer, "\x1B[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
-                        }
-                        if (cell.style.bg) |c| {
-                            try writeControl(writer, "\x1B[48;2;{d};{d};{d}m", .{ c.r, c.g, c.b });
-                        }
-                        style = cell.style;
+                        try writeStyle(writer, cell_style);
+                        style = cell_style;
                     }
 
                     var encoded: [4]u8 = undefined;
@@ -860,7 +873,34 @@ pub fn renderToWriter(
         try writer.flush();
     }
     state.last_size = size;
+    state.last_background = state.background;
     return grid_changed;
+}
+
+// emit the sgr sequences for a style, assuming attributes were just reset
+pub fn writeStyle(writer: *std.Io.Writer, style: grd.Grid.Style) !void {
+    if (style.bold) try writer.writeAll("\x1B[1m");
+    if (style.dim) try writer.writeAll("\x1B[2m");
+    if (style.italic) try writer.writeAll("\x1B[3m");
+    if (style.underline) try writer.writeAll("\x1B[4m");
+    if (style.strikethrough) try writer.writeAll("\x1B[9m");
+    if (style.inverted) try writer.writeAll("\x1B[7m");
+    if (style.fg) |c| try writeColor(writer, c, false);
+    if (style.bg) |c| try writeColor(writer, c, true);
+}
+
+fn writeColor(writer: *std.Io.Writer, color: grd.Grid.Color, background: bool) !void {
+    switch (color) {
+        .ansi => |ansi| {
+            const n = @intFromEnum(ansi);
+            // 30-37 / 40-47 for the normal colors, 90-97 / 100-107 for bright
+            const base: u8 = if (n < 8) 30 else 90;
+            const code = base + (n % 8) + @as(u8, if (background) 10 else 0);
+            try writeControl(writer, "\x1B[{d}m", .{code});
+        },
+        .indexed => |n| try writeControl(writer, "\x1B[{d};5;{d}m", .{ @as(u8, if (background) 48 else 38), n }),
+        .rgb => |c| try writeControl(writer, "\x1B[{d};2;{d};{d};{d}m", .{ @as(u8, if (background) 48 else 38), c.r, c.g, c.b }),
+    }
 }
 
 pub fn moveCursor(writer: *std.Io.Writer, x: usize, y: usize) !void {

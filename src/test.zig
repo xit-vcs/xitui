@@ -709,6 +709,154 @@ test "StreamTerminal renders a widget tree" {
         "\x1B[?2026h\x1B[2;2H\x1B[7mj\x1B[0m\x1B[?2026l",
         output.written()[styled_start..],
     );
+
+    // attributes then colors, after the per-frame reset state
+    const cases = [_]struct { style: Grid.Style, sgr: []const u8 }{
+        .{ .style = .{ .bold = true, .fg = .{ .ansi = .red } }, .sgr = "\x1B[1m\x1B[31m" },
+        .{ .style = .{ .fg = .{ .ansi = .bright_red }, .bg = .{ .ansi = .bright_blue } }, .sgr = "\x1B[91m\x1B[104m" },
+        .{ .style = .{ .bg = .{ .indexed = 17 } }, .sgr = "\x1B[48;5;17m" },
+        .{ .style = .{ .bg = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, .underline = true }, .sgr = "\x1B[4m\x1B[48;2;1;2;3m" },
+    };
+    for (cases) |case| {
+        (try grid.cell(1, 1)).style = case.style;
+        const start = output.written().len;
+        try std.testing.expect(try terminal.render(&widget));
+        const expected = try std.mem.concat(allocator, u8, &.{ "\x1B[?2026h\x1B[2;2H", case.sgr, "j\x1B[0m\x1B[?2026l" });
+        defer allocator.free(expected);
+        try std.testing.expectEqualStrings(expected, output.written()[start..]);
+    }
+}
+
+test "StreamTerminal paints the terminal background" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 20, .height = 5 });
+    defer terminal.deinit();
+    terminal.setBackground(.{ .indexed = 236 });
+
+    var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "hello", .{ .border_style = .single, .wrap_kind = .none }) };
+    defer widget.deinit(allocator);
+
+    const first_start = output.written().len;
+    _ = try terminal.render(&widget);
+    const first = output.written()[first_start..];
+    // the bg is set before the clear so the cleared spaces carry it
+    const bg_index = std.mem.indexOf(u8, first, "\x1B[48;5;236m").?;
+    const clear_index = std.mem.indexOf(u8, first, "\x1B[1;1H").?;
+    try std.testing.expect(bg_index < clear_index);
+    // unstyled cells already match the seeded style, so no further sgr
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, first, "\x1B[48;5;236m"));
+    try std.testing.expect(std.mem.endsWith(u8, first, "\x1B[0m\x1B[?2026l"));
+
+    // an unchanged background and frame stay silent
+    const unchanged_start = output.written().len;
+    terminal.setBackground(.{ .indexed = 236 });
+    try std.testing.expect(!try terminal.render(&widget));
+    try std.testing.expectEqualStrings("", output.written()[unchanged_start..]);
+
+    // a new background forces a full refresh
+    terminal.setBackground(.{ .rgb = .{ .r = 9, .g = 8, .b = 7 } });
+    const changed_start = output.written().len;
+    try std.testing.expect(try terminal.render(&widget));
+    const changed = output.written()[changed_start..];
+    try std.testing.expect(std.mem.startsWith(u8, changed, "\x1B[?2026h\x1B[48;2;9;8;7m\x1B[1;1H"));
+    try std.testing.expect(std.mem.indexOf(u8, changed, "hello") != null);
+
+    // clearing it refreshes without any bg
+    terminal.setBackground(null);
+    const cleared_start = output.written().len;
+    try std.testing.expect(try terminal.render(&widget));
+    const cleared = output.written()[cleared_start..];
+    try std.testing.expect(std.mem.startsWith(u8, cleared, "\x1B[?2026h\x1B[1;1H"));
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "48;") == null);
+}
+
+test "TextBox spans layer over the option style" {
+    const allocator = std.testing.allocator;
+    const blue: Grid.Color = .{ .ansi = .blue };
+    const red: Grid.Color = .{ .ansi = .red };
+
+    var text_box = try wgt.TextBox.initSpans(allocator, &.{
+        .{ .text = "ab", .style = .{ .fg = red } },
+        .{ .text = "c", .style = .{ .bold = true } },
+    }, .{ .border_style = .single, .wrap_kind = .none, .style = .{ .bg = blue } });
+    defer text_box.deinit(allocator);
+
+    const constraint: layout.Constraint = .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 20, .height = 5 },
+    };
+    try text_box.build(allocator, constraint, text_box.getFocus());
+    {
+        const grid = text_box.getGrid().?;
+        const str = try grid.toString(allocator);
+        defer allocator.free(str);
+        try std.testing.expectEqualStrings("┌───┐\n│abc│\n└───┘", str);
+
+        const a = try grid.cell(1, 1);
+        try std.testing.expect(a.style.eql(.{ .fg = red, .bg = blue }));
+        const b = try grid.cell(2, 1);
+        try std.testing.expect(b.style.eql(.{ .fg = red, .bg = blue }));
+        const c = try grid.cell(3, 1);
+        try std.testing.expect(c.style.eql(.{ .bold = true, .bg = blue }));
+        // the border picks up the widget-wide style
+        try std.testing.expect((try grid.cell(0, 0)).style.eql(.{ .bg = blue }));
+    }
+
+    // inversion covers the border and the text
+    text_box.options.inverted = true;
+    try text_box.build(allocator, constraint, text_box.getFocus());
+    {
+        const grid = text_box.getGrid().?;
+        try std.testing.expect((try grid.cell(0, 0)).style.eql(.{ .bg = blue, .inverted = true }));
+        try std.testing.expect((try grid.cell(1, 1)).style.eql(.{ .fg = red, .bg = blue, .inverted = true }));
+        for (grid.cells) |cell| try std.testing.expect(cell.style.inverted);
+    }
+
+    // plain content replaces the runs with a single unstyled one
+    text_box.options.inverted = false;
+    try text_box.setContent(allocator, "xyz");
+    try std.testing.expectEqual(@as(usize, 1), text_box.runs.items.len);
+    try text_box.build(allocator, constraint, text_box.getFocus());
+    {
+        const grid = text_box.getGrid().?;
+        for (1..4) |x| try std.testing.expect((try grid.cell(x, 1)).style.eql(.{ .bg = blue }));
+    }
+}
+
+test "inverted TextInput flips its cursor back" {
+    const allocator = std.testing.allocator;
+    var widget = Widget{ .text_input = try wgt.TextInput.init(allocator, .{ .inverted = true, .visible_width = 5 }) };
+    defer widget.deinit(allocator);
+    // a root widget is its own focused leaf
+    widget.getFocus().grandchild_id = widget.getFocus().id;
+    try widget.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 20, .height = 5 },
+    }, widget.getFocus());
+    const grid = widget.getGrid().?;
+    // the border is inverted, the cursor cell is not
+    try std.testing.expect((try grid.cell(0, 0)).style.inverted);
+    try std.testing.expect(!(try grid.cell(1, 1)).style.inverted);
+    try std.testing.expect((try grid.cell(2, 1)).style.inverted);
+}
+
+test "Text applies its style to every cell" {
+    const allocator = std.testing.allocator;
+    var text = try wgt.Text.init(allocator, "a中");
+    defer text.deinit(allocator);
+    text.style = .{ .dim = true, .fg = .{ .indexed = 3 } };
+    try text.build(allocator, .{
+        .min_size = .{ .width = null, .height = null },
+        .max_size = .{ .width = 20, .height = 1 },
+    }, text.getFocus());
+    const grid = text.getGrid().?;
+    try std.testing.expectEqual(@as(usize, 3), grid.size.width);
+    // the wide rune's continuation shares the style too
+    try std.testing.expect(grid.cells[2].continuation);
+    for (grid.cells) |cell| try std.testing.expect(cell.style.eql(text.style));
 }
 
 test "cursor control sequence stays whole at a writer boundary" {

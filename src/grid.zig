@@ -7,37 +7,82 @@ pub const Grid = struct {
     size: layout.Size,
     cells: []Cell,
 
-    pub const Color = struct {
-        r: u8,
-        g: u8,
-        b: u8,
+    pub const Color = union(enum) {
+        // 16-color palette; follows the terminal theme
+        ansi: Ansi,
+        // 256-color palette
+        indexed: u8,
+        // truecolor
+        rgb: Rgb,
+
+        pub const Ansi = enum(u8) {
+            black,
+            red,
+            green,
+            yellow,
+            blue,
+            magenta,
+            cyan,
+            white,
+            bright_black,
+            bright_red,
+            bright_green,
+            bright_yellow,
+            bright_blue,
+            bright_magenta,
+            bright_cyan,
+            bright_white,
+        };
+
+        pub const Rgb = struct {
+            r: u8,
+            g: u8,
+            b: u8,
+        };
 
         pub fn eql(self: Color, other: Color) bool {
-            return self.r == other.r and self.g == other.g and self.b == other.b;
+            return std.meta.eql(self, other);
         }
     };
 
     pub const Style = struct {
-        inverted: bool = false,
-        // truecolor foreground/background. null means "leave the terminal
-        // default", which is how transparency is expressed: a cell with no bg
-        // lets whatever is behind it (the terminal background) show through.
+        // null means "leave the terminal default", which is how transparency
+        // is expressed: a cell with no bg lets whatever is behind it (the
+        // parent widget's bg, or the terminal background) show through.
         fg: ?Color = null,
         bg: ?Color = null,
+        bold: bool = false,
+        dim: bool = false,
+        italic: bool = false,
+        underline: bool = false,
+        strikethrough: bool = false,
+        inverted: bool = false,
 
+        // compares every field: the renderer's frame diff relies on it, so a
+        // missed field would mean styled cells never redraw
         pub fn eql(self: Style, other: Style) bool {
-            if (self.inverted != other.inverted) return false;
-            if (!optColorEql(self.fg, other.fg)) return false;
-            if (!optColorEql(self.bg, other.bg)) return false;
-            return true;
+            return std.meta.eql(self, other);
         }
 
-        fn optColorEql(a: ?Color, b: ?Color) bool {
-            if (a) |av| {
-                return if (b) |bv| av.eql(bv) else false;
-            }
-            return b == null;
+        // layer this style over `base`: set colors win, attributes accumulate
+        pub fn over(self: Style, base: Style) Style {
+            return .{
+                .fg = self.fg orelse base.fg,
+                .bg = self.bg orelse base.bg,
+                .bold = self.bold or base.bold,
+                .dim = self.dim or base.dim,
+                .italic = self.italic or base.italic,
+                .underline = self.underline or base.underline,
+                .strikethrough = self.strikethrough or base.strikethrough,
+                .inverted = self.inverted or base.inverted,
+            };
         }
+    };
+
+    // a run of text drawn with one style
+    pub const Span = struct {
+        text: []const u8,
+        style: Style = .{},
     };
 
     pub const Cell = struct {
@@ -131,6 +176,17 @@ pub const Grid = struct {
         self.allocator.free(self.cells);
     }
 
+    // set every cell's style. runes drawn afterwards with setRune keep it.
+    pub fn fill(self: *Grid, style: Style) void {
+        for (self.cells) |*c| c.style = style;
+    }
+
+    // toggle inversion on every cell. a cell that was already inverted (like
+    // a cursor) flips back and stays distinguishable.
+    pub fn invert(self: *Grid) void {
+        for (self.cells) |*c| c.style.inverted = !c.style.inverted;
+    }
+
     // blank the surviving half of any wide-rune pair the cell at (x, y)
     // belongs to, in preparation for overwriting that cell. the orphaned half
     // becomes a space — the column stays occupied, but half a glyph can't be
@@ -188,7 +244,10 @@ pub const Grid = struct {
                     // blank the outside half of any wide pair this write
                     // splits (the inside half is overwritten by the copy)
                     self.blankPartner(x + target_x, y + target_y);
+                    // a child with no bg is transparent: keep ours
+                    const bg = src.style.bg orelse target.style.bg;
                     target.* = src;
+                    target.style.bg = bg;
                 } else |_| {
                     // clipped by our right edge: if the cell that didn't fit
                     // was a continuation, its wide lead landed in our last
@@ -305,4 +364,32 @@ test "initFromGrid blanks wide pairs split by the view edge" {
     const right = try view2.toString(allocator);
     defer allocator.free(right);
     try std.testing.expectEqualStrings("你 ", right);
+}
+
+test "Style.over layers colors and accumulates attributes" {
+    const base: Grid.Style = .{ .fg = .{ .ansi = .red }, .bg = .{ .indexed = 17 }, .bold = true };
+    const top: Grid.Style = .{ .fg = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, .italic = true };
+    const merged = top.over(base);
+    try std.testing.expect(merged.fg.?.eql(.{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }));
+    try std.testing.expect(merged.bg.?.eql(.{ .indexed = 17 }));
+    try std.testing.expect(merged.bold);
+    try std.testing.expect(merged.italic);
+    try std.testing.expect(!merged.underline);
+    // an empty style over a base is the base
+    try std.testing.expect((Grid.Style{}).over(base).eql(base));
+}
+
+test "drawGrid keeps the target bg under a transparent child" {
+    const allocator = std.testing.allocator;
+    var parent = try Grid.init(allocator, .{ .width = 2, .height = 1 });
+    defer parent.deinit();
+    parent.fill(.{ .bg = .{ .ansi = .blue } });
+    var child = try Grid.init(allocator, .{ .width = 2, .height = 1 });
+    defer child.deinit();
+    try child.setRune(0, 0, 'x');
+    (try child.cell(1, 0)).style.bg = .{ .ansi = .red };
+    try parent.drawGrid(child, 0, 0);
+    try std.testing.expect(parent.cells[0].style.bg.?.eql(.{ .ansi = .blue }));
+    try std.testing.expectEqual(@as(u21, 'x'), parent.cells[0].rune.?);
+    try std.testing.expect(parent.cells[1].style.bg.?.eql(.{ .ansi = .red }));
 }

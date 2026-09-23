@@ -1,5 +1,7 @@
 const std = @import("std");
 const Grid = @import("./grid.zig").Grid;
+pub const Style = Grid.Style;
+pub const Span = Grid.Span;
 const Focus = @import("./focus.zig").Focus;
 const layout = @import("./layout.zig");
 const inp = @import("./input.zig");
@@ -12,6 +14,7 @@ pub const Text = struct {
     focus: *Focus,
     grid: ?Grid,
     content: []const u8,
+    style: Style = .{},
 
     pub fn init(allocator: std.mem.Allocator, content: []const u8) !Text {
         return .{
@@ -41,6 +44,7 @@ pub const Text = struct {
         const content_width = try wth.displayWidth(self.content);
         var grid = try Grid.init(allocator, .{ .width = @max(1, @min(content_width, constraint.max_size.width orelse content_width)), .height = 1 });
         errdefer grid.deinit();
+        grid.fill(self.style);
         var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
         var i: usize = 0;
         while (utf8.nextCodepoint()) |char| {
@@ -91,6 +95,12 @@ pub const BoxOptions = struct {
     bottom_label: []const u8 = "",
     // force each child to fill the cross axis when it's bounded.
     stretch: bool = false,
+    // style for the whole box, border included. children with no bg of
+    // their own show this bg through.
+    style: Style = .{},
+    // swap text and background colors across the whole box, border and
+    // children included
+    inverted: bool = false,
 };
 
 pub fn Box(comptime Widget: type) type {
@@ -429,6 +439,7 @@ pub fn Box(comptime Widget: type) type {
 
             var grid = try Grid.init(allocator, .{ .width = width, .height = height });
             errdefer grid.deinit();
+            grid.fill(self.options.style);
 
             self.getFocus().clear();
 
@@ -476,6 +487,7 @@ pub fn Box(comptime Widget: type) type {
             if (self.options.border_style) |border_style| {
                 try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
             }
+            if (self.options.inverted) grid.invert();
 
             // set grid
             self.grid = grid;
@@ -537,6 +549,11 @@ pub const TextBoxOptions = struct {
     // optional labels rendered over the top and bottom borders.
     label: []const u8 = "",
     bottom_label: []const u8 = "",
+    // style for the whole box, border included; span styles layer over it
+    style: Style = .{},
+    // swap text and background colors across the whole box, border
+    // included (e.g. to mark a selected tab)
+    inverted: bool = false,
 };
 
 pub const TextBox = struct {
@@ -544,7 +561,15 @@ pub const TextBox = struct {
     grid: ?Grid,
     options: TextBoxOptions,
     content: std.ArrayList(u21),
+    // style runs over content, in order: each covers codepoints up to (not
+    // including) its end index
+    runs: std.ArrayList(Run),
     lines: std.ArrayList(Line),
+
+    pub const Run = struct {
+        end: usize,
+        style: Style,
+    };
 
     const Line = struct {
         start: usize,
@@ -557,8 +582,19 @@ pub const TextBox = struct {
         content: []const u8,
         options: TextBoxOptions,
     ) !TextBox {
-        var codepoints = try decodeContent(allocator, content);
-        errdefer codepoints.deinit(allocator);
+        return initSpans(allocator, &.{.{ .text = content }}, options);
+    }
+
+    pub fn initSpans(
+        allocator: std.mem.Allocator,
+        spans: []const Span,
+        options: TextBoxOptions,
+    ) !TextBox {
+        var decoded = try decodeSpans(allocator, spans);
+        errdefer {
+            decoded.content.deinit(allocator);
+            decoded.runs.deinit(allocator);
+        }
 
         const focus = try Focus.create(allocator, .text_box);
 
@@ -566,7 +602,8 @@ pub const TextBox = struct {
             .focus = focus,
             .grid = null,
             .options = options,
-            .content = codepoints,
+            .content = decoded.content,
+            .runs = decoded.runs,
             .lines = .empty,
         };
     }
@@ -576,12 +613,19 @@ pub const TextBox = struct {
         self.clearGrid();
         self.lines.deinit(allocator);
         self.content.deinit(allocator);
+        self.runs.deinit(allocator);
     }
 
     pub fn setContent(self: *TextBox, allocator: std.mem.Allocator, content: []const u8) !void {
-        const codepoints = try decodeContent(allocator, content);
+        try self.setSpans(allocator, &.{.{ .text = content }});
+    }
+
+    pub fn setSpans(self: *TextBox, allocator: std.mem.Allocator, spans: []const Span) !void {
+        const decoded = try decodeSpans(allocator, spans);
         self.content.deinit(allocator);
-        self.content = codepoints;
+        self.runs.deinit(allocator);
+        self.content = decoded.content;
+        self.runs = decoded.runs;
     }
 
     pub fn build(self: *TextBox, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
@@ -628,13 +672,21 @@ pub const TextBox = struct {
 
         var grid = try Grid.init(allocator, .{ .width = width, .height = height });
         errdefer grid.deinit();
+        grid.fill(self.options.style);
 
+        // lines are visited in content order, so one cursor walks the runs
+        var run_index: usize = 0;
         for (self.lines.items[0..visible_lines], 0..) |line, y| {
             const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
             var x: usize = 0;
-            for (self.content.items[line.start..line.end]) |codepoint| {
+            for (self.content.items[line.start..line.end], line.start..) |codepoint, i| {
                 const rune_width = wth.cellWidth(codepoint);
                 if (x + rune_width > line_width) break;
+                while (run_index < self.runs.items.len and self.runs.items[run_index].end <= i) run_index += 1;
+                // the last run ends at the content length, so the fallback
+                // only matters for empty content
+                const run_style: Style = if (run_index < self.runs.items.len) self.runs.items[run_index].style else .{};
+                (try grid.cell(x + border_size, y + border_size)).style = run_style.over(self.options.style);
                 try grid.setRune(x + border_size, y + border_size, codepoint);
                 x += rune_width;
             }
@@ -644,6 +696,7 @@ pub const TextBox = struct {
         if (border_style) |style| {
             try draw.border(&grid, style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
         }
+        if (self.options.inverted) grid.invert();
 
         self.grid = grid;
         if (root_focus == self.getFocus()) root_focus.refocus();
@@ -671,14 +724,19 @@ pub const TextBox = struct {
         return self.focus;
     }
 
-    fn decodeContent(allocator: std.mem.Allocator, content: []const u8) !std.ArrayList(u21) {
+    fn decodeSpans(allocator: std.mem.Allocator, spans: []const Span) !struct { content: std.ArrayList(u21), runs: std.ArrayList(Run) } {
         var codepoints: std.ArrayList(u21) = .empty;
         errdefer codepoints.deinit(allocator);
-        var utf8 = (try std.unicode.Utf8View.init(content)).iterator();
-        while (utf8.nextCodepoint()) |codepoint| {
-            try codepoints.append(allocator, codepoint);
+        var runs: std.ArrayList(Run) = .empty;
+        errdefer runs.deinit(allocator);
+        for (spans) |span| {
+            var utf8 = (try std.unicode.Utf8View.init(span.text)).iterator();
+            while (utf8.nextCodepoint()) |codepoint| {
+                try codepoints.append(allocator, codepoint);
+            }
+            try runs.append(allocator, .{ .end = codepoints.items.len, .style = span.style });
         }
-        return codepoints;
+        return .{ .content = codepoints, .runs = runs };
     }
 
     fn rebuildLines(self: *TextBox, allocator: std.mem.Allocator, max_width: ?usize) !void {
@@ -819,6 +877,11 @@ pub const TextInputOptions = struct {
     // options for multiline scrolling; only fill, show_bar, and
     // web_native are honored
     scroll: ScrollOptions = .{},
+    // style for the whole input, border included
+    style: Style = .{},
+    // swap text and background colors across the whole input, border
+    // included. the cursor flips back so it stays visible.
+    inverted: bool = false,
 };
 
 pub const TextInput = struct {
@@ -1038,6 +1101,7 @@ pub const TextInput = struct {
 
         var grid = try Grid.init(allocator, .{ .width = width, .height = height });
         errdefer grid.deinit();
+        grid.fill(self.options.style);
 
         const has_focus = root_focus.grandchild_id == self.focus.id;
 
@@ -1074,6 +1138,7 @@ pub const TextInput = struct {
         if (effective_border) |border_style| {
             try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
         }
+        if (self.options.inverted) grid.invert();
 
         self.grid = grid;
     }
@@ -1128,6 +1193,7 @@ pub const TextInput = struct {
 
         var grid = try Grid.init(allocator, .{ .width = width, .height = vp_h + border_size * 2 });
         errdefer grid.deinit();
+        grid.fill(self.options.style);
 
         const has_focus = root_focus.grandchild_id == self.focus.id;
 
@@ -1171,6 +1237,7 @@ pub const TextInput = struct {
         if (effective_border) |border_style| {
             try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
         }
+        if (self.options.inverted) grid.invert();
 
         self.grid = grid;
     }
