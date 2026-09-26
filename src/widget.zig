@@ -575,6 +575,8 @@ pub const TextBoxOptions = struct {
     // swap text and background colors across the whole box, border
     // included (e.g. to mark a selected tab)
     inverted: bool = false,
+    // make bare http and https urls in the content terminal hyperlinks
+    detect_links: bool = false,
 };
 
 pub const TextBox = struct {
@@ -586,10 +588,20 @@ pub const TextBox = struct {
     // including) its end index
     runs: std.ArrayList(Run),
     lines: std.ArrayList(Line),
+    // the detected urls, in order, and the text they link to
+    links: std.ArrayList(Link) = .empty,
+    link_text: std.ArrayList(u8) = .empty,
 
     pub const Run = struct {
         end: usize,
         style: Style,
+    };
+
+    // a url over content [start, end), linking to link_text[text_start..]
+    const Link = struct {
+        start: usize,
+        end: usize,
+        text_start: usize,
     };
 
     pub fn init(
@@ -629,6 +641,8 @@ pub const TextBox = struct {
         self.lines.deinit(allocator);
         self.content.deinit(allocator);
         self.runs.deinit(allocator);
+        self.links.deinit(allocator);
+        self.link_text.deinit(allocator);
     }
 
     pub fn setContent(self: *TextBox, allocator: std.mem.Allocator, content: []const u8) !void {
@@ -655,6 +669,9 @@ pub const TextBox = struct {
 
         const max_inner_width = if (constraint.max_size.width) |width| width - border_size * 2 else null;
         try wrapLines(allocator, &self.lines, self.content.items, self.options.wrap_kind, max_inner_width);
+        // found here rather than when the content is set, since the last
+        // grid borrows link_text until this build clears it
+        try self.findLinks(allocator);
 
         const focused = root_focus.grandchild_id == self.getFocus().id;
         const border_style: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
@@ -689,8 +706,9 @@ pub const TextBox = struct {
         errdefer grid.deinit();
         grid.fill(self.options.style);
 
-        // lines are visited in content order, so one cursor walks the runs
+        // lines are visited in content order, so cursors walk the runs and links
         var run_index: usize = 0;
+        var link_index: usize = 0;
         for (self.lines.items[0..visible_lines], 0..) |line, y| {
             const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
             var x: usize = 0;
@@ -701,7 +719,13 @@ pub const TextBox = struct {
                 // the last run ends at the content length, so the fallback
                 // only matters for empty content
                 const run_style: Style = if (run_index < self.runs.items.len) self.runs.items[run_index].style else .{};
-                (try grid.cell(x + border_size, y + border_size)).style = run_style.over(self.options.style);
+                const cell = try grid.cell(x + border_size, y + border_size);
+                cell.style = run_style.over(self.options.style);
+                while (link_index < self.links.items.len and self.links.items[link_index].end <= i) link_index += 1;
+                if (link_index < self.links.items.len) {
+                    const link = self.links.items[link_index];
+                    if (link.start <= i) cell.link = self.link_text.items[link.text_start..][0 .. link.end - link.start];
+                }
                 try grid.setRune(x + border_size, y + border_size, codepoint);
                 x += rune_width;
             }
@@ -737,6 +761,53 @@ pub const TextBox = struct {
 
     pub fn getFocus(self: *TextBox) *Focus {
         return self.focus;
+    }
+
+    // collect the content's bare urls when the options ask for it
+    fn findLinks(self: *TextBox, allocator: std.mem.Allocator) !void {
+        self.links.clearRetainingCapacity();
+        self.link_text.clearRetainingCapacity();
+        if (!self.options.detect_links) return;
+        const content = self.content.items;
+        var i: usize = 0;
+        while (i < content.len) : (i += 1) {
+            const prefix_len = urlPrefixLen(content, i) orelse continue;
+            var end = i + prefix_len;
+            var parens: isize = 0;
+            while (end < content.len and isUrlChar(content[end])) : (end += 1) {
+                if (content[end] == '(') parens += 1;
+                if (content[end] == ')') parens -= 1;
+            }
+            // trailing punctuation ends the sentence, not the url, as does
+            // a closing paren the url didn't open
+            while (end > i + prefix_len) : (end -= 1) {
+                const c = content[end - 1];
+                if (c == ')' and parens < 0) {
+                    parens += 1;
+                } else if (std.mem.indexOfScalar(u21, &.{ '.', ',', ':', ';', '!', '?', '\'', '"' }, c) == null) break;
+            }
+            if (end == i + prefix_len) continue;
+            try self.links.append(allocator, .{ .start = i, .end = end, .text_start = self.link_text.items.len });
+            for (content[i..end]) |c| try self.link_text.append(allocator, @intCast(c));
+            i = end - 1;
+        }
+    }
+
+    // the length of the `http://` or `https://` starting a url at `i`
+    fn urlPrefixLen(content: []const u21, i: usize) ?usize {
+        if (i > 0 and content[i - 1] < 0x80 and std.ascii.isAlphanumeric(@intCast(content[i - 1]))) return null;
+        for ([_][]const u8{ "https://", "http://" }) |prefix| {
+            if (i + prefix.len > content.len) continue;
+            for (prefix, content[i..][0..prefix.len]) |p, c| {
+                if (c != p) break;
+            } else return prefix.len;
+        }
+        return null;
+    }
+
+    // printable ascii that can sit inside a bare url
+    fn isUrlChar(c: u21) bool {
+        return c > ' ' and c < 0x7f and c != '<' and c != '>' and c != '"' and c != '`';
     }
 
     fn decodeSpans(allocator: std.mem.Allocator, spans: []const Span) !struct { content: std.ArrayList(u21), runs: std.ArrayList(Run) } {
