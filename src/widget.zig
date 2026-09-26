@@ -95,6 +95,8 @@ pub const BoxOptions = struct {
     bottom_label: []const u8 = "",
     // force each child to fill the cross axis when it's bounded.
     stretch: bool = false,
+    // blank cells between laid-out children along the main axis
+    gap: usize = 0,
     // style for the whole box, border included. children with no bg of
     // their own show this bg through.
     style: Style = .{},
@@ -232,9 +234,11 @@ pub fn Box(comptime Widget: type) type {
                     .vert => remaining_height_maybe,
                 } orelse break :blk null;
                 var others: usize = 0;
+                var shown: usize = 0;
                 for (layout_order.items) |layout_child| {
                     const child = self.children.values()[layout_child.index];
                     if (child.hidden) continue;
+                    shown += 1;
                     if (child.flex == .shrink) continue;
                     const min_main = switch (self.options.direction) {
                         .horiz => layout_child.min_size.width,
@@ -242,7 +246,7 @@ pub fn Box(comptime Widget: type) type {
                     };
                     others += min_main orelse 0;
                 }
-                break :blk main_remaining -| others;
+                break :blk main_remaining -| others -| self.options.gap * (shown -| 1);
             };
 
             // measure each flex-shrink child at the budget, then pin it to the
@@ -282,10 +286,14 @@ pub fn Box(comptime Widget: type) type {
                 .vert => if (constraint.max_size.height orelse constraint.min_size.height) |target| target -| border_size * 2 else null,
             };
 
+            // how many children have been laid out, each after the first
+            // taking a gap before it
+            var placed: usize = 0;
             for (layout_order.items, 0..) |layout_child, sorted_child_index| {
                 var child = &self.children.values()[layout_child.index];
                 child.rect = null;
                 child.widget.clearGrid();
+                const gap: usize = if (placed > 0) self.options.gap else 0;
 
                 // a hidden child takes no space: leave its grid cleared so the
                 // placement loop routes it through the no-grid branch.
@@ -293,16 +301,19 @@ pub fn Box(comptime Widget: type) type {
 
                 // skip any children after the first if their min size is too large
                 if (sorted_child_index > 0) {
+                    // the gap only takes room along the main axis
+                    const gap_w: usize = if (self.options.direction == .horiz) gap else 0;
+                    const gap_h: usize = if (self.options.direction == .vert) gap else 0;
                     if (remaining_width_maybe) |remaining_width| {
-                        if (remaining_width <= 0) continue;
+                        if (remaining_width <= gap_w) continue;
                         if (layout_child.min_size.width) |min_width| {
-                            if (remaining_width < min_width) continue;
+                            if (remaining_width < gap_w + min_width) continue;
                         }
                     }
                     if (remaining_height_maybe) |remaining_height| {
-                        if (remaining_height <= 0) continue;
+                        if (remaining_height <= gap_h) continue;
                         if (layout_child.min_size.height) |min_height| {
-                            if (remaining_height < min_height) continue;
+                            if (remaining_height < gap_h + min_height) continue;
                         }
                     }
                 }
@@ -317,6 +328,7 @@ pub fn Box(comptime Widget: type) type {
                     .horiz => &expected_remaining_width_maybe,
                     .vert => &expected_remaining_height_maybe,
                 };
+                if (expected_remaining_main.*) |*remaining| remaining.* -|= gap;
                 const self_min_main = switch (self.options.direction) {
                     .horiz => child_min_size.width,
                     .vert => child_min_size.height,
@@ -344,7 +356,9 @@ pub fn Box(comptime Widget: type) type {
                             .horiz => width,
                             .vert => height,
                         };
-                        grow_size = (target -| used) / grow_count;
+                        // each grow child still to come takes a gap too
+                        const pending_gaps = self.options.gap * (if (placed > 0) grow_count else grow_count - 1);
+                        grow_size = (target -| used -| pending_gaps) / grow_count;
                     }
                     grow_count -= 1;
                 }
@@ -408,15 +422,16 @@ pub fn Box(comptime Widget: type) type {
                 }, root_focus);
 
                 if (child.widget.getGrid()) |child_grid| {
+                    placed += 1;
                     switch (self.options.direction) {
                         .vert => {
-                            if (remaining_height_maybe) |*remaining_height| remaining_height.* -|= child_grid.size.height;
+                            if (remaining_height_maybe) |*remaining_height| remaining_height.* -|= gap + child_grid.size.height;
                             width = @max(width, child_grid.size.width);
-                            height += child_grid.size.height;
+                            height += gap + child_grid.size.height;
                         },
                         .horiz => {
-                            if (remaining_width_maybe) |*remaining_width| remaining_width.* -|= child_grid.size.width;
-                            width += child_grid.size.width;
+                            if (remaining_width_maybe) |*remaining_width| remaining_width.* -|= gap + child_grid.size.width;
+                            width += gap + child_grid.size.width;
                             height = @max(height, child_grid.size.height);
                         },
                     }
@@ -446,8 +461,11 @@ pub fn Box(comptime Widget: type) type {
             switch (self.options.direction) {
                 .vert => {
                     var line: usize = 0;
+                    var first = true;
                     for (self.children.values()) |*child| {
                         if (child.widget.getGrid()) |child_grid| {
+                            if (!first) line += self.options.gap;
+                            first = false;
                             child.rect = .{ .x = 0, .y = @as(isize, @intCast(line + border_size)), .size = child_grid.size };
                             try grid.drawGrid(child_grid, border_size, line + border_size);
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, border_size, line + border_size);
@@ -465,8 +483,11 @@ pub fn Box(comptime Widget: type) type {
                 },
                 .horiz => {
                     var col: usize = 0;
+                    var first = true;
                     for (self.children.values()) |*child| {
                         if (child.widget.getGrid()) |child_grid| {
+                            if (!first) col += self.options.gap;
+                            first = false;
                             child.rect = .{ .x = @as(isize, @intCast(col + border_size)), .y = 0, .size = child_grid.size };
                             try grid.drawGrid(child_grid, col + border_size, border_size);
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, col + border_size, border_size);
@@ -571,12 +592,6 @@ pub const TextBox = struct {
         style: Style,
     };
 
-    const Line = struct {
-        start: usize,
-        end: usize,
-        width: usize,
-    };
-
     pub fn init(
         allocator: std.mem.Allocator,
         content: []const u8,
@@ -639,7 +654,7 @@ pub const TextBox = struct {
         }
 
         const max_inner_width = if (constraint.max_size.width) |width| width - border_size * 2 else null;
-        try self.rebuildLines(allocator, max_inner_width);
+        try wrapLines(allocator, &self.lines, self.content.items, self.options.wrap_kind, max_inner_width);
 
         const focused = root_focus.grandchild_id == self.getFocus().id;
         const border_style: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
@@ -738,114 +753,119 @@ pub const TextBox = struct {
         }
         return .{ .content = codepoints, .runs = runs };
     }
-
-    fn rebuildLines(self: *TextBox, allocator: std.mem.Allocator, max_width: ?usize) !void {
-        self.lines.clearRetainingCapacity();
-        const width = max_width orelse return self.wrapChars(allocator, null);
-        switch (self.options.wrap_kind) {
-            .none => try self.wrapChars(allocator, null),
-            .char => try self.wrapChars(allocator, width),
-            .word => try self.wrapWords(allocator, width),
-        }
-    }
-
-    fn wrapChars(self: *TextBox, allocator: std.mem.Allocator, max_width: ?usize) !void {
-        var start: usize = 0;
-        var width: usize = 0;
-        for (self.content.items, 0..) |codepoint, i| {
-            if (codepoint == '\n') {
-                try self.appendLine(allocator, start, i, width);
-                start = i + 1;
-                width = 0;
-                continue;
-            }
-
-            const rune_width = wth.cellWidth(codepoint);
-            if (max_width) |limit| {
-                if (width > 0 and width + rune_width > limit) {
-                    try self.appendLine(allocator, start, i, width);
-                    start = i;
-                    width = 0;
-                }
-            }
-            width += rune_width;
-        }
-        try self.appendLine(allocator, start, self.content.items.len, width);
-    }
-
-    fn wrapWords(self: *TextBox, allocator: std.mem.Allocator, max_width: usize) !void {
-        var line_start: usize = 0;
-        var line_end: usize = 0;
-        var line_width: usize = 0;
-        var i: usize = 0;
-
-        while (i < self.content.items.len) {
-            const codepoint = self.content.items[i];
-            if (codepoint == '\n') {
-                try self.appendLine(allocator, line_start, line_end, line_width);
-                i += 1;
-                line_start = i;
-                line_end = i;
-                line_width = 0;
-                continue;
-            }
-
-            if (codepoint == ' ' or codepoint == '\t') {
-                if (line_width > 0 and line_width < max_width) {
-                    line_end = i + 1;
-                    line_width += 1;
-                } else if (line_width == 0) {
-                    line_start = i + 1;
-                    line_end = i + 1;
-                }
-                i += 1;
-                continue;
-            }
-
-            const word_start = i;
-            var word_width: usize = 0;
-            while (i < self.content.items.len) : (i += 1) {
-                const current = self.content.items[i];
-                if (current == '\n' or current == ' ' or current == '\t') break;
-                word_width += wth.cellWidth(current);
-            }
-            const word_end = i;
-
-            if (line_width + word_width <= max_width) {
-                if (line_width == 0) line_start = word_start;
-                line_end = word_end;
-                line_width += word_width;
-            } else if (word_width <= max_width) {
-                if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
-                line_start = word_start;
-                line_end = word_end;
-                line_width = word_width;
-            } else {
-                if (line_width > 0) try self.appendLine(allocator, line_start, line_end, line_width);
-                var segment_start = word_start;
-                var segment_width: usize = 0;
-                for (self.content.items[word_start..word_end], word_start..) |current, index| {
-                    const rune_width = wth.cellWidth(current);
-                    if (segment_width > 0 and segment_width + rune_width > max_width) {
-                        try self.appendLine(allocator, segment_start, index, segment_width);
-                        segment_start = index;
-                        segment_width = 0;
-                    }
-                    segment_width += rune_width;
-                }
-                line_start = segment_start;
-                line_end = word_end;
-                line_width = segment_width;
-            }
-        }
-
-        try self.appendLine(allocator, line_start, line_end, line_width);
-    }
-
-    fn appendLine(self: *TextBox, allocator: std.mem.Allocator, start: usize, end: usize, width: usize) !void {
-        try self.lines.append(allocator, .{ .start = start, .end = end, .width = width });
-    }
 };
+
+// a wrapped line: the content indices [start, end) and their display width
+pub const Line = struct {
+    start: usize,
+    end: usize,
+    width: usize,
+};
+
+// replace `lines` with `content` wrapped at `max_width`; unbounded when null,
+// where only newlines break
+pub fn wrapLines(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, kind: WrapKind, max_width: ?usize) !void {
+    lines.clearRetainingCapacity();
+    const width = max_width orelse return wrapChars(allocator, lines, content, null);
+    switch (kind) {
+        .none => try wrapChars(allocator, lines, content, null),
+        .char => try wrapChars(allocator, lines, content, width),
+        .word => try wrapWords(allocator, lines, content, width),
+    }
+}
+
+fn wrapChars(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, max_width: ?usize) !void {
+    var start: usize = 0;
+    var width: usize = 0;
+    for (content, 0..) |codepoint, i| {
+        if (codepoint == '\n') {
+            try lines.append(allocator, .{ .start = start, .end = i, .width = width });
+            start = i + 1;
+            width = 0;
+            continue;
+        }
+
+        const rune_width = wth.cellWidth(codepoint);
+        if (max_width) |limit| {
+            if (width > 0 and width + rune_width > limit) {
+                try lines.append(allocator, .{ .start = start, .end = i, .width = width });
+                start = i;
+                width = 0;
+            }
+        }
+        width += rune_width;
+    }
+    try lines.append(allocator, .{ .start = start, .end = content.len, .width = width });
+}
+
+fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, max_width: usize) !void {
+    var line_start: usize = 0;
+    var line_end: usize = 0;
+    var line_width: usize = 0;
+    var i: usize = 0;
+
+    while (i < content.len) {
+        const codepoint = content[i];
+        if (codepoint == '\n') {
+            try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+            i += 1;
+            line_start = i;
+            line_end = i;
+            line_width = 0;
+            continue;
+        }
+
+        if (codepoint == ' ' or codepoint == '\t') {
+            if (line_width > 0 and line_width < max_width) {
+                line_end = i + 1;
+                line_width += 1;
+            } else if (line_width == 0) {
+                line_start = i + 1;
+                line_end = i + 1;
+            }
+            i += 1;
+            continue;
+        }
+
+        const word_start = i;
+        var word_width: usize = 0;
+        while (i < content.len) : (i += 1) {
+            const current = content[i];
+            if (current == '\n' or current == ' ' or current == '\t') break;
+            word_width += wth.cellWidth(current);
+        }
+        const word_end = i;
+
+        if (line_width + word_width <= max_width) {
+            if (line_width == 0) line_start = word_start;
+            line_end = word_end;
+            line_width += word_width;
+        } else if (word_width <= max_width) {
+            if (line_width > 0) try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+            line_start = word_start;
+            line_end = word_end;
+            line_width = word_width;
+        } else {
+            if (line_width > 0) try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+            var segment_start = word_start;
+            var segment_width: usize = 0;
+            for (content[word_start..word_end], word_start..) |current, index| {
+                const rune_width = wth.cellWidth(current);
+                if (segment_width > 0 and segment_width + rune_width > max_width) {
+                    try lines.append(allocator, .{ .start = segment_start, .end = index, .width = segment_width });
+                    segment_start = index;
+                    segment_width = 0;
+                }
+                segment_width += rune_width;
+            }
+            line_start = segment_start;
+            line_end = word_end;
+            line_width = segment_width;
+        }
+    }
+
+    try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+}
 
 pub const TextInputOptions = struct {
     border_style: ?draw.BorderStyle = .single_dashed,
