@@ -724,7 +724,11 @@ pub const Terminal = struct {
 
 pub const RenderState = struct {
     allocator: std.mem.Allocator,
+    // the last frame's cells, with their links swapped for `last_links`
     last_grid: ?grd.Grid = null,
+    // a hash of each snapshot cell's link (0 for none). the frame's link
+    // strings may be freed once it's drawn, so only their hashes are kept.
+    last_links: []u64 = &.{},
     last_size: ?Size = null,
     // whole-terminal background, shown under any cell whose bg is null.
     // changing it forces a full refresh on the next render.
@@ -736,13 +740,22 @@ pub const RenderState = struct {
     }
 
     pub fn deinit(self: *RenderState) void {
-        if (self.last_grid) |*grid| grid.deinit();
-        self.last_grid = null;
+        self.replaceGrid(null) catch unreachable;
     }
 
-    fn replaceGrid(self: *RenderState, next_grid: ?grd.Grid) void {
+    // a fresh, blank snapshot of `size`, or none
+    fn replaceGrid(self: *RenderState, size: ?Size) !void {
         if (self.last_grid) |*grid| grid.deinit();
-        self.last_grid = next_grid;
+        self.last_grid = null;
+        self.allocator.free(self.last_links);
+        self.last_links = &.{};
+        const new_size = size orelse return;
+        var grid = try grd.Grid.init(self.allocator, new_size);
+        errdefer grid.deinit();
+        const links = try self.allocator.alloc(u64, grid.cells.len);
+        @memset(links, 0);
+        self.last_grid = grid;
+        self.last_links = links;
     }
 };
 
@@ -783,22 +796,25 @@ pub fn renderToWriter(
         else
             true;
         if (needs_snapshot) {
-            state.replaceGrid(try grd.Grid.init(state.allocator, grid.size));
+            try state.replaceGrid(grid.size);
             force_refresh = true;
         }
     } else if (state.last_grid != null) {
-        state.replaceGrid(null);
+        try state.replaceGrid(null);
         force_refresh = true;
     }
 
     var started = false;
     // track terminal state to avoid per-cell escapes
     var style: grd.Grid.Style = .{};
+    // the hash of the hyperlink the terminal has open (0 for none)
+    var open_link: u64 = 0;
     errdefer {
         // a partial frame needs a full redraw, including reused snapshot cells
         state.last_size = null;
         state.last_background = null;
         if (started) {
+            if (open_link != 0) writeLink(writer, null) catch {};
             attributeReset(writer) catch {};
             writer.writeAll("\x1B[?2026l") catch {};
             writer.flush() catch {};
@@ -827,13 +843,21 @@ pub fn renderToWriter(
                 const row_start = y * grid.size.width;
                 const row = grid.cells[row_start..][0..grid.size.width];
                 const last_row = last_grid.cells[row_start..][0..grid.size.width];
-                for (row, last_row, 0..) |cell, *last_cell, x| {
-                    if (!force_refresh and cell.eql(last_cell.*)) continue;
+                const last_link_row = state.last_links[row_start..][0..grid.size.width];
+                for (row, last_row, last_link_row, 0..) |cell, *last_cell, *last_link, x| {
+                    // an unsafe url is drawn without a link
+                    const cell_link = if (cell.link) |l| (if (isSafeLink(l)) l else null) else null;
+                    const link_hash = if (cell_link) |l| std.hash.Wyhash.hash(0, l) | 1 else 0;
+                    var unlinked = cell;
+                    unlinked.link = null;
+                    if (!force_refresh and unlinked.eql(last_cell.*) and link_hash == last_link.*) continue;
                     grid_changed = true;
-                    last_cell.* = cell;
+                    last_cell.* = unlinked;
+                    last_link.* = link_hash;
 
                     if (cell.continuation) continue;
-                    if (force_refresh and cell.rune == null and cell.style.eql(.{})) continue;
+                    // the clear already drew blank cells, unless they carry a link
+                    if (force_refresh and cell.rune == null and cell.style.eql(.{}) and link_hash == 0) continue;
                     var cell_style = cell.style;
                     cell_style.bg = cell_style.bg orelse state.background;
                     // off-screen cursor moves clamp to the edge
@@ -856,6 +880,10 @@ pub fn renderToWriter(
                         try writeStyle(writer, cell_style);
                         style = cell_style;
                     }
+                    if (link_hash != open_link) {
+                        try writeLink(writer, cell_link);
+                        open_link = link_hash;
+                    }
 
                     var encoded: [4]u8 = undefined;
                     const len = try std.unicode.utf8Encode(rune, &encoded);
@@ -867,6 +895,7 @@ pub fn renderToWriter(
     }
 
     if (started) {
+        if (open_link != 0) try writeLink(writer, null);
         if (!style.eql(.{})) try attributeReset(writer);
         try writer.writeAll("\x1B[?2026l");
         started = false;
@@ -887,6 +916,21 @@ pub fn writeStyle(writer: *std.Io.Writer, style: grd.Grid.Style) !void {
     if (style.inverted) try writer.writeAll("\x1B[7m");
     if (style.fg) |c| try writeColor(writer, c, false);
     if (style.bg) |c| try writeColor(writer, c, true);
+}
+
+// open an osc 8 hyperlink to `url`, or close the open one when null
+fn writeLink(writer: *std.Io.Writer, url: ?[]const u8) !void {
+    try writer.writeAll("\x1B]8;;");
+    if (url) |u| try writer.writeAll(u);
+    try writer.writeAll("\x1B\\");
+}
+
+// whether `url` can go in an osc 8 sequence: printable ascii without
+// spaces, so it can't end the sequence early or smuggle in escapes
+fn isSafeLink(url: []const u8) bool {
+    if (url.len == 0) return false;
+    for (url) |c| if (c <= ' ' or c >= 0x7f) return false;
+    return true;
 }
 
 fn writeColor(writer: *std.Io.Writer, color: grd.Grid.Color, background: bool) !void {

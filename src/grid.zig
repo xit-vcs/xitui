@@ -92,7 +92,11 @@ pub const Grid = struct {
         // cell to its left. rune is always null, but the column is occupied,
         // not empty — the renderer must neither draw nor clear it.
         continuation: bool = false,
+        // a url the terminal makes the cell a hyperlink to (osc 8). it's
+        // borrowed, so it must outlive the grid.
+        link: ?[]const u8 = null,
 
+        // ignores the link, which the renderer compares by hash
         pub fn eql(self: Cell, other: Cell) bool {
             if (self.continuation != other.continuation) return false;
             if (!self.style.eql(other.style)) return false;
