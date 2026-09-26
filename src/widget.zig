@@ -88,7 +88,7 @@ pub const BoxDirection = enum {
 
 pub const BoxOptions = struct {
     border_style: ?draw.BorderStyle,
-    rounded_corners: bool = false,
+    round_corners: bool = false,
     direction: BoxDirection,
     // optional labels rendered over the top and bottom borders.
     label: []const u8 = "",
@@ -102,7 +102,7 @@ pub const BoxOptions = struct {
     style: Style = .{},
     // swap text and background colors across the whole box, border and
     // children included
-    inverted: bool = false,
+    invert: bool = false,
 };
 
 pub fn Box(comptime Widget: type) type {
@@ -506,9 +506,9 @@ pub fn Box(comptime Widget: type) type {
             }
 
             if (self.options.border_style) |border_style| {
-                try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+                try draw.border(&grid, border_style, self.options.round_corners, self.options.label, self.options.bottom_label);
             }
-            if (self.options.inverted) grid.invert();
+            if (self.options.invert) grid.invert();
 
             // set grid
             self.grid = grid;
@@ -565,7 +565,7 @@ pub const WrapKind = enum {
 
 pub const TextBoxOptions = struct {
     border_style: ?draw.BorderStyle,
-    rounded_corners: bool = false,
+    round_corners: bool = false,
     wrap_kind: WrapKind,
     // optional labels rendered over the top and bottom borders.
     label: []const u8 = "",
@@ -574,7 +574,7 @@ pub const TextBoxOptions = struct {
     style: Style = .{},
     // swap text and background colors across the whole box, border
     // included (e.g. to mark a selected tab)
-    inverted: bool = false,
+    invert: bool = false,
     // make bare http and https urls in the content terminal hyperlinks
     detect_links: bool = false,
 };
@@ -733,9 +733,9 @@ pub const TextBox = struct {
 
         self.focus.clear();
         if (border_style) |style| {
-            try draw.border(&grid, style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+            try draw.border(&grid, style, self.options.round_corners, self.options.label, self.options.bottom_label);
         }
-        if (self.options.inverted) grid.invert();
+        if (self.options.invert) grid.invert();
 
         self.grid = grid;
         if (root_focus == self.getFocus()) root_focus.refocus();
@@ -940,7 +940,7 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
 
 pub const TextInputOptions = struct {
     border_style: ?draw.BorderStyle = .single_dashed,
-    rounded_corners: bool = false,
+    round_corners: bool = false,
     // visible width in codepoints, excluding the border (null = fill
     // the available width)
     visible_width: ?usize = 20,
@@ -972,7 +972,7 @@ pub const TextInputOptions = struct {
     style: Style = .{},
     // swap text and background colors across the whole input, border
     // included. the cursor flips back so it stays visible.
-    inverted: bool = false,
+    invert: bool = false,
 };
 
 pub const TextInput = struct {
@@ -1227,9 +1227,9 @@ pub const TextInput = struct {
 
         // border
         if (effective_border) |border_style| {
-            try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+            try draw.border(&grid, border_style, self.options.round_corners, self.options.label, self.options.bottom_label);
         }
-        if (self.options.inverted) grid.invert();
+        if (self.options.invert) grid.invert();
 
         self.grid = grid;
     }
@@ -1326,9 +1326,9 @@ pub const TextInput = struct {
         }
 
         if (effective_border) |border_style| {
-            try draw.border(&grid, border_style, self.options.rounded_corners, self.options.label, self.options.bottom_label);
+            try draw.border(&grid, border_style, self.options.round_corners, self.options.label, self.options.bottom_label);
         }
-        if (self.options.inverted) grid.invert();
+        if (self.options.invert) grid.invert();
 
         self.grid = grid;
     }

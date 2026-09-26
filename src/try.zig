@@ -222,7 +222,7 @@ const WidgetList = struct {
         if (self.scroll.child.box.children.getPtr(self.tabs_id)) |tabs_child| {
             const tabs = &tabs_child.widget.box;
             for (tabs.children.values()) |*tab| {
-                tab.widget.text_box.options.inverted = tabs.getFocus().child_id == tab.widget.getFocus().id;
+                tab.widget.text_box.options.invert = tabs.getFocus().child_id == tab.widget.getFocus().id;
             }
         }
         try self.scroll.build(allocator, constraint, root_focus);

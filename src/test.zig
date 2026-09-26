@@ -806,7 +806,7 @@ test "TextBox spans layer over the option style" {
     }
 
     // inversion covers the border and the text
-    text_box.options.inverted = true;
+    text_box.options.invert = true;
     try text_box.build(allocator, constraint, text_box.getFocus());
     {
         const grid = text_box.getGrid().?;
@@ -816,7 +816,7 @@ test "TextBox spans layer over the option style" {
     }
 
     // plain content replaces the runs with a single unstyled one
-    text_box.options.inverted = false;
+    text_box.options.invert = false;
     try text_box.setContent(allocator, "xyz");
     try std.testing.expectEqual(@as(usize, 1), text_box.runs.items.len);
     try text_box.build(allocator, constraint, text_box.getFocus());
@@ -828,7 +828,7 @@ test "TextBox spans layer over the option style" {
 
 test "inverted TextInput flips its cursor back" {
     const allocator = std.testing.allocator;
-    var widget = Widget{ .text_input = try wgt.TextInput.init(allocator, .{ .inverted = true, .visible_width = 5 }) };
+    var widget = Widget{ .text_input = try wgt.TextInput.init(allocator, .{ .invert = true, .visible_width = 5 }) };
     defer widget.deinit(allocator);
     // a root widget is its own focused leaf
     widget.getFocus().grandchild_id = widget.getFocus().id;

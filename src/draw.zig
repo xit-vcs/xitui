@@ -26,7 +26,7 @@ pub fn label(grid: *Grid, y: usize, text: []const u8) !void {
 }
 
 // draw a border (and its labels) around the outermost cells of the grid.
-pub fn border(grid: *Grid, border_style: BorderStyle, rounded_corners: bool, top_label: []const u8, bottom_label: []const u8) !void {
+pub fn border(grid: *Grid, border_style: BorderStyle, round_corners: bool, top_label: []const u8, bottom_label: []const u8) !void {
     const dashed = border_style == .single_dashed or border_style == .double_dashed;
     const horiz_line: u21 = switch (border_style) {
         .hidden => ' ',
@@ -40,23 +40,23 @@ pub fn border(grid: *Grid, border_style: BorderStyle, rounded_corners: bool, top
     };
     const top_left: u21 = switch (border_style) {
         .hidden => ' ',
-        .single, .single_dashed => if (rounded_corners) '╭' else '┌',
-        .double, .double_dashed => if (rounded_corners) '╭' else '╔',
+        .single, .single_dashed => if (round_corners) '╭' else '┌',
+        .double, .double_dashed => if (round_corners) '╭' else '╔',
     };
     const top_right: u21 = switch (border_style) {
         .hidden => ' ',
-        .single, .single_dashed => if (rounded_corners) '╮' else '┐',
-        .double, .double_dashed => if (rounded_corners) '╮' else '╗',
+        .single, .single_dashed => if (round_corners) '╮' else '┐',
+        .double, .double_dashed => if (round_corners) '╮' else '╗',
     };
     const bottom_left: u21 = switch (border_style) {
         .hidden => ' ',
-        .single, .single_dashed => if (rounded_corners) '╰' else '└',
-        .double, .double_dashed => if (rounded_corners) '╰' else '╚',
+        .single, .single_dashed => if (round_corners) '╰' else '└',
+        .double, .double_dashed => if (round_corners) '╰' else '╚',
     };
     const bottom_right: u21 = switch (border_style) {
         .hidden => ' ',
-        .single, .single_dashed => if (rounded_corners) '╯' else '┘',
-        .double, .double_dashed => if (rounded_corners) '╯' else '╝',
+        .single, .single_dashed => if (round_corners) '╯' else '┘',
+        .double, .double_dashed => if (round_corners) '╯' else '╝',
     };
     for (1..grid.size.width - 1) |x| {
         if (dashed and x % 2 == 1) continue;
