@@ -1,3 +1,5 @@
+const grd = @import("./grid.zig");
+
 pub const Key = union(enum) {
     unknown,
     arrow_up,
@@ -31,8 +33,10 @@ pub const Key = union(enum) {
     ctrl: u8,
     codepoint: u21,
     mouse: Mouse,
-    event: enum {
+    event: union(enum) {
         resize,
+        // the terminal's reply to writeBackgroundQuery
+        background: grd.Grid.Color.Rgb,
     },
 };
 

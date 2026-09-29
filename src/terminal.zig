@@ -698,6 +698,18 @@ pub const Terminal = struct {
         self.core.cook() catch {};
     }
 
+    // see writeBackgroundQuery; the reply arrives through readKey
+    pub fn queryBackground(self: *Terminal) !void {
+        switch (builtin.os.tag) {
+            // console input records would deliver the reply as keystrokes
+            .windows => {},
+            else => {
+                try writeBackgroundQuery(&self.core.writer.interface);
+                try self.core.writer.interface.flush();
+            },
+        }
+    }
+
     // fill the terminal behind any cell with no bg of its own
     pub fn setBackground(self: *Terminal, background: ?grd.Grid.Color) void {
         self.render_state.background = background;
@@ -999,6 +1011,29 @@ pub fn disableMouse(writer: *std.Io.Writer) !void {
     try writer.writeAll("\x1B[?1000l");
 }
 
+// ask for the default background color (OSC 11). a terminal that supports it
+// replies with a sequence the parser reports as a background event.
+pub fn writeBackgroundQuery(writer: *std.Io.Writer) !void {
+    try writer.writeAll("\x1B]11;?\x1B\\");
+}
+
+// the body of an OSC 11 reply after "11;": "rgb:R/G/B" with 1 to 4 hex digits per channel
+fn parseBackgroundReport(body: []const u8) ?grd.Grid.Color.Rgb {
+    const prefix = "rgb:";
+    if (!std.mem.startsWith(u8, body, prefix)) return null;
+    var channels = std.mem.splitScalar(u8, body[prefix.len..], '/');
+    var rgb: [3]u8 = undefined;
+    for (&rgb) |*channel| {
+        const hex = channels.next() orelse return null;
+        if (hex.len > 4) return null;
+        const value = std.fmt.parseInt(u32, hex, 16) catch return null;
+        const max = (@as(u32, 1) << @intCast(hex.len * 4)) - 1;
+        channel.* = @intCast((value * 255 + max / 2) / max);
+    }
+    if (channels.next() != null) return null;
+    return .{ .r = rgb[0], .g = rgb[1], .b = rgb[2] };
+}
+
 fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
     // buffer at this point looks like: ESC '[' '<' Cb ';' Cx ';' Cy
     if (buffer.len < 4) return null;
@@ -1063,6 +1098,10 @@ pub const EscapeParser = struct {
     // fits the reports terminals send unprompted (device attributes, cursor
     // position, mode queries); anything longer is swallowed, not parsed.
     const esc_buffer_size = 128;
+
+    // only OSC 11 is parsed. until its prefix matches, the bytes may be alt+]
+    // followed by typing.
+    const osc_prefix = "\x1B]11;";
 
     pub fn init(allocator: std.mem.Allocator) !EscapeParser {
         return .{
@@ -1153,15 +1192,36 @@ pub const EscapeParser = struct {
         try self.writeCodepoint(codepoint);
     }
 
-    // report a held-back ESC as the escape key. an ESC is buffered rather than
-    // reported at once because it may open a CSI/SS3 sequence or an alt combo;
-    // a caller that knows nothing more is coming resolves it with this. a
+    // whether the buffered input awaits flushEscape: a lone ESC, or a partial
+    // OSC 11 prefix that may be alt+] followed by typing
+    pub fn isAmbiguous(self: *const EscapeParser) bool {
+        return self.esc_len == 1 or self.inOscPrefix();
+    }
+
+    fn inOscPrefix(self: *const EscapeParser) bool {
+        return self.esc_len >= 2 and self.esc_len < osc_prefix.len and self.esc_buffer[1] == ']';
+    }
+
+    // resolve ambiguous input once nothing more is coming: a held-back ESC is
+    // the escape key, and a partial OSC 11 prefix is alt+] and typed keys. a
     // longer partial sequence is unaffected, since it may still complete.
     pub fn flushEscape(self: *EscapeParser) !void {
-        if (self.esc_len == 1 and self.esc_buffer[0] == '\x1B') {
+        if (self.esc_len == 1) {
             self.clearScratch();
             try self.append(.escape);
+        } else if (self.inOscPrefix()) {
+            try self.replayOscPrefix();
         }
+    }
+
+    // report a partial OSC 11 prefix as alt+] and replay the bytes after it
+    fn replayOscPrefix(self: *EscapeParser) std.mem.Allocator.Error!void {
+        var replay_buf: [osc_prefix.len]u8 = undefined;
+        const replay = replay_buf[0 .. self.esc_len - 2];
+        @memcpy(replay, self.esc_buffer[2..self.esc_len]);
+        self.clearScratch();
+        try self.append(.{ .alt = ']' });
+        for (replay) |b| try self.writeCodepoint(b);
     }
 
     // give up on the buffered sequence: a lone ESC was the escape key, and a
@@ -1201,10 +1261,10 @@ pub const EscapeParser = struct {
             return self.append(plainKey(codepoint));
         };
 
-        // the byte after ESC either opens a CSI/SS3 sequence or completes an
-        // alt combo; anything non-printable means the ESC was the escape key
+        // the byte after ESC either opens a CSI/SS3/OSC sequence or completes
+        // an alt combo; anything non-printable means the ESC was the escape key
         if (self.esc_len == 1) {
-            if (byte == '[' or byte == 'O') {
+            if (byte == '[' or byte == 'O' or byte == ']') {
                 self.appendScratch(byte);
                 return;
             }
@@ -1217,6 +1277,30 @@ pub const EscapeParser = struct {
                 return;
             }
             return self.append(plainKey(codepoint));
+        }
+
+        // an OSC sequence runs until BEL or ST (ESC \)
+        if (self.esc_buffer[1] == ']') {
+            if (self.esc_len < osc_prefix.len and byte != osc_prefix[self.esc_len]) {
+                try self.replayOscPrefix();
+                return self.writeCodepoint(codepoint);
+            }
+            const st = byte == '\\' and self.esc_buffer[self.esc_len - 1] == '\x1B';
+            if (byte == 0x07 or st) {
+                const body_end = if (st) self.esc_len - 1 else self.esc_len;
+                const report = if (self.esc_overflowed) null else parseBackgroundReport(self.esc_buffer[osc_prefix.len..body_end]);
+                const key: inp.Key = if (report) |rgb| .{ .event = .{ .background = rgb } } else .unknown;
+                self.clearScratch();
+                return self.append(key);
+            }
+            if (self.esc_len == self.esc_buffer.len) {
+                // keep the last byte current so an ST is still recognized
+                self.esc_overflowed = true;
+                self.esc_buffer[self.esc_len - 1] = byte;
+            } else {
+                self.appendScratch(byte);
+            }
+            return;
         }
 
         switch (byte) {

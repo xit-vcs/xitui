@@ -79,10 +79,10 @@ pub const StreamTerminal = struct {
         try self.parser.queueBytes(bytes);
     }
 
-    // report a held-back ESC as the escape key. a lone ESC is ambiguous until
-    // the next byte arrives, since it may open a sequence carried in the next
-    // frame, so a driver should call this once input has gone idle (~25 ms is
-    // the convention) or pressing Escape waits on the next keystroke.
+    // resolve ambiguous buffered input (see EscapeParser.isAmbiguous). a lone
+    // ESC or ESC ] may open a sequence carried in the next frame, so a driver
+    // should call this once input has gone idle (~25 ms is the convention) or
+    // pressing Escape waits on the next keystroke.
     pub fn flushEscape(self: *StreamTerminal) !void {
         try self.parser.flushEscape();
     }
@@ -95,6 +95,12 @@ pub const StreamTerminal = struct {
             return .{ .event = .resize };
         }
         return self.parser.popQueued();
+    }
+
+    // see term.writeBackgroundQuery; the reply arrives through popKey
+    pub fn queryBackground(self: *StreamTerminal) !void {
+        try term.writeBackgroundQuery(self.writer);
+        try self.writer.flush();
     }
 
     // fill the terminal behind any cell with no bg of its own
