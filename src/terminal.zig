@@ -16,10 +16,8 @@ pub const Core = switch (builtin.os.tag) {
         write_buffer: []u8,
         writer: Tty.Writer,
         allocator: std.mem.Allocator,
-        last_mouse_buttons: std.os.windows.DWORD,
+        parser: EscapeParser,
         high_surrogate: ?u16 = null,
-        repeat_key: inp.Key = .unknown,
-        repeats_left: u16 = 0,
 
         pub const KEY_EVENT_RECORD = extern struct {
             bKeyDown: std.os.windows.BOOL,
@@ -264,9 +262,11 @@ pub const Core = switch (builtin.os.tag) {
             const ENABLE_VIRTUAL_TERMINAL_INPUT: std.os.windows.DWORD = 0x0200;
             // ENABLE_EXTENDED_FLAGS is required for ENABLE_QUICK_EDIT_MODE to
             // take effect; quick edit mode would otherwise swallow mouse events.
-            // virtual terminal input must stay off because input is read as
-            // console events rather than escape sequences.
-            const new_in_mode = (self.tty.old_in_mode | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT) & ~(ENABLE_QUICK_EDIT_MODE | ENABLE_VIRTUAL_TERMINAL_INPUT);
+            // virtual terminal input delivers keys, mouse, and terminal replies
+            // as escape sequences, so they decode through the same parser as on
+            // posix. mouse input comes from the sequences enableMouse requests,
+            // not console mouse events.
+            const new_in_mode = (self.tty.old_in_mode | ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT) & ~(ENABLE_QUICK_EDIT_MODE | ENABLE_MOUSE_INPUT);
             if (SetConsoleMode(in_handle, new_in_mode) == .FALSE) {
                 return error.FailedToSetConsoleMode;
             }
@@ -275,6 +275,7 @@ pub const Core = switch (builtin.os.tag) {
             try hideCursor(&self.writer.interface);
             try enterAlt(&self.writer.interface);
             try clearStyle(&self.writer.interface);
+            try enableMouse(&self.writer.interface);
             try self.writer.interface.flush();
         }
 
@@ -284,6 +285,7 @@ pub const Core = switch (builtin.os.tag) {
                 _ = SetConsoleMode(std.Io.File.stdout().handle, self.tty.old_out_mode);
                 _ = SetConsoleMode(std.Io.File.stdin().handle, self.tty.old_in_mode);
             }
+            try disableMouse(&self.writer.interface);
             try clearStyle(&self.writer.interface);
             try leaveAlt(&self.writer.interface);
             try showCursor(&self.writer.interface);
@@ -291,152 +293,63 @@ pub const Core = switch (builtin.os.tag) {
             try self.writer.interface.flush();
         }
 
-        fn decodeKeyEvent(self: *Core, event: KEY_EVENT_RECORD) ?inp.Key {
-            if (event.bKeyDown == .FALSE) return null;
-            const shifted = event.dwControlKeyState & 0x0010 != 0;
+        // virtual terminal input delivers the input stream one utf-16 unit
+        // per key-down event
+        fn queueKeyEvent(self: *Core, event: KEY_EVENT_RECORD) !void {
+            if (event.bKeyDown == .FALSE) return;
             const unit = event.uChar.UnicodeChar;
-            if (unit != 0) {
-                if (std.unicode.utf16IsHighSurrogate(unit)) {
-                    self.high_surrogate = unit;
-                    return null;
-                }
-                const high = self.high_surrogate;
-                self.high_surrogate = null;
-                const cp: u21 = if (std.unicode.utf16IsLowSurrogate(unit)) blk: {
-                    const first = high orelse return .unknown;
-                    break :blk std.unicode.utf16DecodeSurrogatePair(&.{ first, unit }) catch unreachable;
-                } else unit;
-
-                if (cp == 8 or cp == 127) return .backspace;
-                if (cp == 13 or cp == 10) return .enter;
-                if (cp == 9) return if (shifted) .back_tab else .tab;
-                if (cp == 0x1B) return .escape;
-                if (cp >= 0x01 and cp <= 0x1A) return .{ .ctrl = @intCast(cp - 0x01 + 'a') };
-                // altgr reports right alt + left ctrl and must stay plain text
-                const alt_pressed = event.dwControlKeyState & (0x0001 | 0x0002) != 0;
-                const ctrl_pressed = event.dwControlKeyState & (0x0004 | 0x0008) != 0;
-                if (alt_pressed and !ctrl_pressed and cp >= 0x20 and cp < 0x7F) {
-                    return .{ .alt = @intCast(cp) };
-                }
-                return .{ .codepoint = cp };
+            // modifier-only key presses carry no character
+            if (unit == 0) return;
+            if (std.unicode.utf16IsHighSurrogate(unit)) {
+                self.high_surrogate = unit;
+                return;
             }
-
-            return switch (event.wVirtualKeyCode) {
-                0x09 => if (shifted) .back_tab else .tab,
-                0x21 => .page_up,
-                0x22 => .page_down,
-                0x23 => .end,
-                0x24 => .home,
-                0x25 => .arrow_left,
-                0x26 => .arrow_up,
-                0x27 => .arrow_right,
-                0x28 => .arrow_down,
-                0x0D => .enter,
-                0x2D => .insert,
-                0x2E => .delete,
-                // F1-F12
-                0x70...0x7B => .{ .f = @intCast(event.wVirtualKeyCode - 0x70 + 1) },
-                else => null,
-            };
+            const high = self.high_surrogate;
+            self.high_surrogate = null;
+            const codepoint: u21 = if (std.unicode.utf16IsLowSurrogate(unit)) blk: {
+                const first = high orelse return;
+                break :blk std.unicode.utf16DecodeSurrogatePair(&.{ first, unit }) catch unreachable;
+            } else unit;
+            var utf8: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(codepoint, &utf8) catch return;
+            for (0..@max(1, event.wRepeatCount)) |_| try self.parser.queueBytes(utf8[0..len]);
         }
 
         fn readKey(self: *Core, _: std.Io, blocking: bool) !?inp.Key {
-            const timeout: std.os.windows.DWORD = if (blocking) 100 else 0;
-
+            const in_handle = std.Io.File.stdin().handle;
             while (!quit.load(.monotonic)) {
-                if (self.repeats_left > 0) {
-                    self.repeats_left -= 1;
-                    return self.repeat_key;
-                }
-                const in_handle = std.Io.File.stdin().handle;
-                var event_buffer: [1]INPUT_RECORD = undefined;
-                var num_events_read: std.os.windows.DWORD = undefined;
-                // exit early if there is no event ready to read
+                if (resized.swap(false, .monotonic)) return .{ .event = .resize };
+                if (self.parser.popQueued()) |key| return key;
+
+                // ambiguous input gets a short wait even when not blocking, so a
+                // lone escape resolves once the rest of a sequence can't be coming
+                const timeout: std.os.windows.DWORD = if (blocking) 100 else if (self.parser.isAmbiguous()) 25 else 0;
                 waitForSingleObject(in_handle, timeout) catch |err| switch (err) {
                     error.WaitAbandoned => return null,
-                    error.WaitTimeOut => if (blocking) continue else return null,
+                    error.WaitTimeOut => {
+                        try self.parser.flushEscape();
+                        if (self.parser.popQueued()) |key| return key;
+                        if (blocking) continue else return null;
+                    },
                     error.Unexpected => |e| return e,
                 };
                 if (quit.load(.monotonic)) return null;
-                // read events from the buffer
-                if (ReadConsoleInputW(in_handle, @ptrCast(&event_buffer), event_buffer.len, &num_events_read) == .FALSE) {
+
+                var records: [64]INPUT_RECORD = undefined;
+                var num_records: std.os.windows.DWORD = undefined;
+                if (ReadConsoleInputW(in_handle, &records, records.len, &num_records) == .FALSE) {
                     return error.FailedToReadConsoleInputW;
                 }
-                if (num_events_read == 0) continue;
-                const event_type = event_buffer[0].EventType;
-                const event = event_buffer[0].Event;
-                switch (event_type) {
+                for (records[0..num_records]) |record| switch (record.EventType) {
                     // KEY_EVENT
-                    0x0001 => {
-                        if (self.decodeKeyEvent(event.KeyEvent)) |key| {
-                            self.repeat_key = key;
-                            self.repeats_left = @max(1, event.KeyEvent.wRepeatCount) - 1;
-                            return key;
-                        }
-                    },
-                    // MOUSE_EVENT
-                    0x0002 => {
-                        const mouse_event = event.MouseEvent;
-                        const raw_x = mouse_event.dwMousePosition.X;
-                        const raw_y = mouse_event.dwMousePosition.Y;
-                        if (raw_x < 0 or raw_y < 0) continue;
-                        const x: usize = @intCast(raw_x);
-                        const y: usize = @intCast(raw_y);
-                        const ctrl_pressed = mouse_event.dwControlKeyState & (0x0004 | 0x0008) != 0;
-
-                        const MOUSE_MOVED: std.os.windows.DWORD = 0x0001;
-                        const MOUSE_WHEELED: std.os.windows.DWORD = 0x0004;
-
-                        if (mouse_event.dwEventFlags & MOUSE_WHEELED != 0) {
-                            // high word of dwButtonState is a signed scroll
-                            // delta — positive means away from the user (up)
-                            const delta: i16 = @bitCast(@as(u16, @truncate(mouse_event.dwButtonState >> 16)));
-                            return .{ .mouse = .{
-                                .x = x,
-                                .y = y,
-                                .action = .{ .scroll = if (delta > 0) .up else .down },
-                                .ctrl = ctrl_pressed,
-                            } };
-                        }
-
-                        // ignore pure-motion events (no button state change)
-                        if (mouse_event.dwEventFlags & MOUSE_MOVED != 0) {
-                            self.last_mouse_buttons = mouse_event.dwButtonState;
-                            continue;
-                        }
-
-                        // detect press/release by diffing button bitmask
-                        const buttons = mouse_event.dwButtonState;
-                        const pressed = buttons & ~self.last_mouse_buttons;
-                        const released = self.last_mouse_buttons & ~buttons;
-                        self.last_mouse_buttons = buttons;
-
-                        const FROM_LEFT_1ST: std.os.windows.DWORD = 0x0001;
-                        const RIGHTMOST: std.os.windows.DWORD = 0x0002;
-                        const FROM_LEFT_2ND: std.os.windows.DWORD = 0x0004;
-
-                        const press_button: ?inp.MouseButton =
-                            if (pressed & FROM_LEFT_1ST != 0) .left else if (pressed & FROM_LEFT_2ND != 0) .middle else if (pressed & RIGHTMOST != 0) .right else null;
-                        if (press_button) |b| {
-                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .press = b }, .ctrl = ctrl_pressed } };
-                        }
-
-                        const release_button: ?inp.MouseButton =
-                            if (released & FROM_LEFT_1ST != 0) .left else if (released & FROM_LEFT_2ND != 0) .middle else if (released & RIGHTMOST != 0) .right else null;
-                        if (release_button) |b| {
-                            return .{ .mouse = .{ .x = x, .y = y, .action = .{ .release = b }, .ctrl = ctrl_pressed } };
-                        }
-
-                        continue;
-                    },
+                    0x0001 => try self.queueKeyEvent(record.Event.KeyEvent),
                     // WINDOW_BUFFER_SIZE_EVENT
-                    0x0004 => return .{ .event = .resize },
-                    // MENU_EVENT
-                    0x0008 => {},
-                    // FOCUS_EVENT
-                    0x0010 => {},
+                    0x0004 => resized.store(true, .monotonic),
+                    // MOUSE_EVENT, MENU_EVENT, FOCUS_EVENT
+                    0x0002, 0x0008, 0x0010 => {},
                     else => return error.UnrecognizedEventType,
-                }
+                };
+                if (!blocking and num_records == 0) return null;
             }
             return null;
         }
@@ -535,6 +448,9 @@ pub const Terminal = struct {
                     .old_in_mode = undefined,
                 };
 
+                var parser = try EscapeParser.init(allocator);
+                errdefer parser.deinit();
+
                 const write_buffer = try allocator.alloc(u8, write_buffer_size);
                 errdefer allocator.free(write_buffer);
 
@@ -544,7 +460,7 @@ pub const Terminal = struct {
                         .write_buffer = write_buffer,
                         .writer = tty.writer(write_buffer),
                         .allocator = allocator,
-                        .last_mouse_buttons = 0,
+                        .parser = parser,
                     },
                     .size = .{ .width = 0, .height = 0 },
                     .render_state = RenderState.init(allocator),
@@ -630,6 +546,7 @@ pub const Terminal = struct {
             .windows => {
                 Core.setConsoleCtrlHandler(Core.ctrlHandler, false) catch {};
                 self.core.cook() catch {};
+                self.core.parser.deinit();
                 self.core.allocator.free(self.core.write_buffer);
             },
             else => {
@@ -700,14 +617,8 @@ pub const Terminal = struct {
 
     // see writeBackgroundQuery; the reply arrives through readKey
     pub fn queryBackground(self: *Terminal) !void {
-        switch (builtin.os.tag) {
-            // console input records would deliver the reply as keystrokes
-            .windows => {},
-            else => {
-                try writeBackgroundQuery(&self.core.writer.interface);
-                try self.core.writer.interface.flush();
-            },
-        }
+        try writeBackgroundQuery(&self.core.writer.interface);
+        try self.core.writer.interface.flush();
     }
 
     // fill the terminal behind any cell with no bg of its own
@@ -1192,10 +1103,11 @@ pub const EscapeParser = struct {
         try self.writeCodepoint(codepoint);
     }
 
-    // whether the buffered input awaits flushEscape: a lone ESC, or a partial
-    // OSC 11 prefix that may be alt+] followed by typing
+    // whether the buffered input awaits flushEscape: a lone ESC, a sequence
+    // introducer that may be alt+[, alt+O, or alt+], or a partial OSC 11 prefix
+    // that may be alt+] followed by typing
     pub fn isAmbiguous(self: *const EscapeParser) bool {
-        return self.esc_len == 1 or self.inOscPrefix();
+        return self.esc_len == 1 or self.esc_len == 2 or self.inOscPrefix();
     }
 
     fn inOscPrefix(self: *const EscapeParser) bool {
@@ -1203,14 +1115,19 @@ pub const EscapeParser = struct {
     }
 
     // resolve ambiguous input once nothing more is coming: a held-back ESC is
-    // the escape key, and a partial OSC 11 prefix is alt+] and typed keys. a
-    // longer partial sequence is unaffected, since it may still complete.
+    // the escape key, a lone introducer is an alt combo, and a partial OSC 11
+    // prefix is alt+] and typed keys. a longer partial sequence is unaffected,
+    // since it may still complete.
     pub fn flushEscape(self: *EscapeParser) !void {
         if (self.esc_len == 1) {
             self.clearScratch();
             try self.append(.escape);
         } else if (self.inOscPrefix()) {
             try self.replayOscPrefix();
+        } else if (self.esc_len == 2) {
+            const byte = self.esc_buffer[1];
+            self.clearScratch();
+            try self.append(.{ .alt = byte });
         }
     }
 
