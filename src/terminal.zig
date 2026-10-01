@@ -796,6 +796,8 @@ pub fn renderToWriter(
                     // off-screen cursor moves clamp to the edge
                     if (x >= size.width or y >= size.height) continue;
                     var rune = cell.rune orelse ' ';
+                    // a control character would move the cursor instead of drawing
+                    if (rune < 0x20 or (rune >= 0x7f and rune < 0xa0)) rune = ' ';
                     if (wth.cellWidth(rune) > size.width - x) rune = ' ';
                     // keep unchanged frames silent
                     if (!started) {
