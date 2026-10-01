@@ -657,6 +657,9 @@ pub const RenderState = struct {
     // changing it forces a full refresh on the next render.
     background: ?grd.Grid.Color = null,
     last_background: ?grd.Grid.Color = null,
+    // draw without colors, keeping other attributes like bold (see
+    // no-color.org). set it before the first render.
+    no_color: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) RenderState {
         return .{ .allocator = allocator };
@@ -750,8 +753,10 @@ pub fn renderToWriter(
         // paint the cleared spaces with the terminal background, so empty
         // default cells can still be skipped below
         if (state.background) |bg| {
-            style = .{ .bg = bg };
-            try writeStyle(writer, style);
+            if (!state.no_color) {
+                style = .{ .bg = bg };
+                try writeStyle(writer, style);
+            }
         }
         try clearRect(writer, 0, 0, size);
     }
@@ -782,7 +787,12 @@ pub fn renderToWriter(
                     // the clear already drew blank cells, unless they carry a link
                     if (force_refresh and cell.rune == null and cell.style.eql(.{}) and link_hash == 0) continue;
                     var cell_style = cell.style;
-                    cell_style.bg = cell_style.bg orelse state.background;
+                    if (state.no_color) {
+                        cell_style.fg = null;
+                        cell_style.bg = null;
+                    } else {
+                        cell_style.bg = cell_style.bg orelse state.background;
+                    }
                     // off-screen cursor moves clamp to the edge
                     if (x >= size.width or y >= size.height) continue;
                     var rune = cell.rune orelse ' ';
