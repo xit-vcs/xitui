@@ -374,7 +374,10 @@ pub const Core = switch (builtin.os.tag) {
             // at column 31 would turn text red, etc.
             self.raw.lflag = .{ .ISIG = true, .IEXTEN = true };
             self.raw.iflag = .{ .ICRNL = true, .IUTF8 = true };
-            self.raw.oflag = .{ .OPOST = true };
+            // oflag is left as-is: rendering only uses cursor positioning, so
+            // clearing ONLCR gains nothing, and if a parent like `zig build`
+            // dies on ctrl+c before we cook, the shell can snapshot our raw
+            // state and keep it, skewing the output of later commands.
             self.raw.cflag.CSIZE = .CS8;
             self.raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
             self.raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
