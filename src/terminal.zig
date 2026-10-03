@@ -10,7 +10,7 @@ const write_buffer_size = 4096;
 pub var quit = std.atomic.Value(bool).init(false);
 var resized = std.atomic.Value(bool).init(false);
 
-pub const Core = switch (builtin.os.tag) {
+pub const Core = switch (builtin.target.os.tag) {
     .windows => struct {
         tty: Tty,
         write_buffer: []u8,
@@ -444,7 +444,7 @@ pub const Terminal = struct {
     render_state: RenderState,
 
     pub fn init(io: std.Io, allocator: std.mem.Allocator) !Terminal {
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .windows => {
                 const tty = Core.Tty{
                     .old_out_mode = undefined,
@@ -545,7 +545,7 @@ pub const Terminal = struct {
 
     pub fn deinit(self: *Terminal, io: std.Io) void {
         self.render_state.deinit();
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .windows => {
                 Core.setConsoleCtrlHandler(Core.ctrlHandler, false) catch {};
                 self.core.cook() catch {};
@@ -562,7 +562,7 @@ pub const Terminal = struct {
     }
 
     pub fn getSize(self: *const Terminal) !Size {
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .windows => {
                 const out_handle = std.Io.File.stdout().handle;
                 var info: Core.CONSOLE_SCREEN_BUFFER_INFO = undefined;
@@ -891,7 +891,7 @@ pub fn moveCursor(writer: *std.Io.Writer, x: usize, y: usize) !void {
 
 fn writeControl(writer: *std.Io.Writer, comptime format: []const u8, args: anytype) !void {
     var buffer: [64]u8 = undefined;
-    const control = std.fmt.bufPrint(&buffer, format, args) catch return error.WriteFailed;
+    const control = std.mem.print(&buffer, format, args) catch return error.WriteFailed;
     try writer.writeAll(control);
 }
 
@@ -1060,7 +1060,7 @@ pub const EscapeParser = struct {
             self.key_index > 0 and self.key_index >= self.key_queue.items.len / 2)
         {
             const pending = self.key_queue.items[self.key_index..];
-            std.mem.copyForwards(inp.Key, self.key_queue.items[0..pending.len], pending);
+            @memmove(self.key_queue.items[0..pending.len], pending);
             self.key_queue.items.len = pending.len;
             self.key_index = 0;
         }
@@ -1106,7 +1106,14 @@ pub const EscapeParser = struct {
         const expected = std.unicode.utf8ByteSequenceLength(self.utf8_buffer[0]) catch unreachable;
         if (self.utf8_len < expected) return;
 
-        const codepoint = std.unicode.utf8Decode(self.utf8_buffer[0..self.utf8_len]) catch {
+        const bytes = self.utf8_buffer;
+        const decoded = switch (self.utf8_len) {
+            2 => std.unicode.utf8Decode2(bytes[0..2].*),
+            3 => std.unicode.utf8Decode3(bytes[0..3].*),
+            4 => std.unicode.utf8Decode4(bytes[0..4].*),
+            else => bytes[0],
+        };
+        const codepoint = decoded catch {
             self.utf8_len = 0;
             return;
         };

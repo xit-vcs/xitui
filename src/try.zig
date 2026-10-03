@@ -14,10 +14,10 @@ pub const std_options_debug_io = term.crash_debug_io;
 
 pub fn main(init: std.process.Init.Minimal) !void {
     // init allocator
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    const allocator = if (builtin.mode == .Debug) debug_allocator.allocator() else std.heap.smp_allocator;
-    defer if (builtin.mode == .Debug) {
-        _ = debug_allocator.deinit();
+    var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    const allocator = if (builtin.optimize == .debug) safe_allocator.allocator() else std.heap.smp_allocator;
+    defer if (builtin.optimize == .debug) {
+        _ = safe_allocator.deinit();
     };
 
     // init io

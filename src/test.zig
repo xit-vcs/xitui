@@ -562,7 +562,12 @@ test "StreamTerminal survives an over-long escape sequence" {
 
     // a device attributes reply longer than the parser's scratch buffer: it
     // reports as one unknown key, tail and all, and input keeps working
-    try terminal.writeBytes("\x1B[?" ++ ("1;" ** 100) ++ "2c");
+    const params = comptime blk: {
+        var buf: []const u8 = "";
+        for (0..100) |_| buf = buf ++ "1;";
+        break :blk buf;
+    };
+    try terminal.writeBytes("\x1B[?" ++ params ++ "2c");
     try std.testing.expectEqual(@as(?inp.Key, .unknown), terminal.popKey());
     try std.testing.expectEqual(@as(?inp.Key, null), terminal.popKey());
 
@@ -676,9 +681,9 @@ test "StreamTerminal renders a widget tree" {
 
     const rendered = output.written()[startup_len..];
     // we should see the rune 'h' from "hello" written somewhere in the output
-    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, 'h') != null);
+    try std.testing.expect(std.mem.findScalar(u8, rendered, 'h') != null);
     // and a cursor move for the first run
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "\x1B[") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "\x1B[") != null);
 
     const unchanged_start = output.written().len;
     try std.testing.expect(!try terminal.render(&widget));
@@ -743,8 +748,8 @@ test "StreamTerminal paints the terminal background" {
     _ = try terminal.render(&widget);
     const first = output.written()[first_start..];
     // the bg is set before the clear so the cleared spaces carry it
-    const bg_index = std.mem.indexOf(u8, first, "\x1B[48;5;236m").?;
-    const clear_index = std.mem.indexOf(u8, first, "\x1B[1;1H").?;
+    const bg_index = std.mem.find(u8, first, "\x1B[48;5;236m").?;
+    const clear_index = std.mem.find(u8, first, "\x1B[1;1H").?;
     try std.testing.expect(bg_index < clear_index);
     // unstyled cells already match the seeded style, so no further sgr
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, first, "\x1B[48;5;236m"));
@@ -762,7 +767,7 @@ test "StreamTerminal paints the terminal background" {
     try std.testing.expect(try terminal.render(&widget));
     const changed = output.written()[changed_start..];
     try std.testing.expect(std.mem.startsWith(u8, changed, "\x1B[?2026h\x1B[48;2;9;8;7m\x1B[1;1H"));
-    try std.testing.expect(std.mem.indexOf(u8, changed, "hello") != null);
+    try std.testing.expect(std.mem.find(u8, changed, "hello") != null);
 
     // clearing it refreshes without any bg
     terminal.setBackground(null);
@@ -770,7 +775,7 @@ test "StreamTerminal paints the terminal background" {
     try std.testing.expect(try terminal.render(&widget));
     const cleared = output.written()[cleared_start..];
     try std.testing.expect(std.mem.startsWith(u8, cleared, "\x1B[?2026h\x1B[1;1H"));
-    try std.testing.expect(std.mem.indexOf(u8, cleared, "48;") == null);
+    try std.testing.expect(std.mem.find(u8, cleared, "48;") == null);
 }
 
 test "TextBox spans layer over the option style" {
@@ -909,12 +914,12 @@ test "StreamTerminal init and deinit emit alt-screen lifecycle" {
     var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
 
     // after init we expect the alt-screen enter sequence and the hide-cursor sequence
-    try std.testing.expect(std.mem.indexOf(u8, output.written(), "\x1B[?1049h") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.written(), "\x1B[?25l") != null);
+    try std.testing.expect(std.mem.find(u8, output.written(), "\x1B[?1049h") != null);
+    try std.testing.expect(std.mem.find(u8, output.written(), "\x1B[?25l") != null);
 
     terminal.deinit();
 
     // after deinit we expect the leave-alt sequence and show-cursor
-    try std.testing.expect(std.mem.indexOf(u8, output.written(), "\x1B[?1049l") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.written(), "\x1B[?25h") != null);
+    try std.testing.expect(std.mem.find(u8, output.written(), "\x1B[?1049l") != null);
+    try std.testing.expect(std.mem.find(u8, output.written(), "\x1B[?25h") != null);
 }

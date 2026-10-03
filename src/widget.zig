@@ -109,7 +109,7 @@ pub fn Box(comptime Widget: type) type {
     return struct {
         focus: *Focus,
         grid: ?Grid,
-        children: std.AutoArrayHashMapUnmanaged(usize, Child),
+        children: std.array_hash_map.Auto(usize, Child),
         options: BoxOptions,
 
         pub const Flex = enum {
@@ -784,7 +784,7 @@ pub const TextBox = struct {
                 const c = content[end - 1];
                 if (c == ')' and parens < 0) {
                     parens += 1;
-                } else if (std.mem.indexOfScalar(u21, &.{ '.', ',', ':', ';', '!', '?', '\'', '"' }, c) == null) break;
+                } else if (std.mem.findScalar(u21, &.{ '.', ',', ':', ';', '!', '?', '\'', '"' }, c) == null) break;
             }
             if (end == i + prefix_len) continue;
             try self.links.append(allocator, .{ .start = i, .end = end, .text_start = self.link_text.items.len });
@@ -1680,7 +1680,7 @@ pub fn Scroll(comptime Widget: type) type {
 pub fn Stack(comptime Widget: type) type {
     return struct {
         focus: *Focus,
-        children: std.AutoArrayHashMapUnmanaged(usize, Widget),
+        children: std.array_hash_map.Auto(usize, Widget),
 
         pub fn init(allocator: std.mem.Allocator) !Stack(Widget) {
             return .{

@@ -34,7 +34,7 @@ pub const Focus = struct {
     child_id: ?usize,
     grandchild_id: ?usize,
     mode: Mode,
-    children: std.AutoArrayHashMapUnmanaged(usize, Child),
+    children: std.array_hash_map.Auto(usize, Child),
     scroll: ?ScrollInfo,
     // owner-bumped when this node's content is replaced (not merely restyled).
     // persists across builds (unlike `scroll`, which is rebuilt each frame), so a
