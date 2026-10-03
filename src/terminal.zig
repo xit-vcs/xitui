@@ -919,10 +919,6 @@ pub fn attributeReset(writer: *std.Io.Writer) !void {
     try writer.writeAll("\x1B[0m");
 }
 
-pub fn blueBackground(writer: *std.Io.Writer) !void {
-    try writer.writeAll("\x1B[44m");
-}
-
 pub fn clearStyle(writer: *std.Io.Writer) !void {
     try writer.writeAll("\x1B[2J");
 }
