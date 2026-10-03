@@ -12,7 +12,7 @@ const Focus = xitui.focus.Focus;
 // isn't mangled by raw mode and the alternate buffer
 pub const std_options_debug_io = term.crash_debug_io;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     // init allocator
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     const allocator = if (builtin.mode == .Debug) debug_allocator.allocator() else std.heap.smp_allocator;
@@ -38,6 +38,7 @@ pub fn main() !void {
     // init term
     var terminal = try term.Terminal.init(io, allocator);
     defer terminal.deinit(io);
+    terminal.render_state.no_color = init.environ.containsUnemptyConstant("NO_COLOR");
     // fill the whole screen, including areas no widget covers
     terminal.setBackground(.{ .rgb = .{ .r = 0x1e, .g = 0x22, .b = 0x2a } });
 
