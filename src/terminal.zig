@@ -379,8 +379,8 @@ pub const Core = switch (builtin.target.os.tag) {
             // dies on ctrl+c before we cook, the shell can snapshot our raw
             // state and keep it, skewing the output of later commands.
             self.raw.cflag.CSIZE = .CS8;
-            self.raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-            self.raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+            self.raw.cc[@backingInt(std.posix.V.TIME)] = 0;
+            self.raw.cc[@backingInt(std.posix.V.MIN)] = 1;
             try std.posix.tcsetattr(self.tty.handle, .FLUSH, self.raw);
 
             try hideCursor(&self.writer.interface);
@@ -532,8 +532,8 @@ pub const Terminal = struct {
                 }, null);
 
                 // set non-blocking
-                self.core.raw.cc[@intFromEnum(std.posix.V.TIME)] = 1;
-                self.core.raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
+                self.core.raw.cc[@backingInt(std.posix.V.TIME)] = 1;
+                self.core.raw.cc[@backingInt(std.posix.V.MIN)] = 0;
                 try std.posix.tcsetattr(self.core.tty.handle, .NOW, self.core.raw);
 
                 self.size = try self.getSize();
@@ -864,17 +864,21 @@ fn writeLink(writer: *std.Io.Writer, url: ?[]const u8) !void {
 }
 
 // whether `url` can go in an osc 8 sequence: printable ascii without
-// spaces, so it can't end the sequence early or smuggle in escapes
+// spaces, so it can't end the sequence early or smuggle in escapes, and
+// with a scheme, since a terminal can't resolve a bare path
 fn isSafeLink(url: []const u8) bool {
     if (url.len == 0) return false;
     for (url) |c| if (c <= ' ' or c >= 0x7f) return false;
+    const colon = std.mem.indexOfScalar(u8, url, ':') orelse return false;
+    if (colon == 0 or !std.ascii.isAlphabetic(url[0])) return false;
+    for (url[1..colon]) |c| if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '-' and c != '.') return false;
     return true;
 }
 
 fn writeColor(writer: *std.Io.Writer, color: grd.Grid.Color, background: bool) !void {
     switch (color) {
         .ansi => |ansi| {
-            const n = @intFromEnum(ansi);
+            const n = @backingInt(ansi);
             // 30-37 / 40-47 for the normal colors, 90-97 / 100-107 for bright
             const base: u8 = if (n < 8) 30 else 90;
             const code = base + (n % 8) + @as(u8, if (background) 10 else 0);

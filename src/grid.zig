@@ -83,6 +83,8 @@ pub const Grid = struct {
     pub const Span = struct {
         text: []const u8,
         style: Style = .{},
+        // a url the span's cells link to, copied by the text box
+        link: ?[]const u8 = null,
     };
 
     pub const Cell = struct {

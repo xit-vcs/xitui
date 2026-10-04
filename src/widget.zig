@@ -591,10 +591,15 @@ pub const TextBox = struct {
     // the detected urls, in order, and the text they link to
     links: std.ArrayList(Link) = .empty,
     link_text: std.ArrayList(u8) = .empty,
+    // the span links the runs point into
+    run_link_text: std.ArrayList(u8),
 
     pub const Run = struct {
         end: usize,
         style: Style,
+        // the span's link as run_link_text[link_start..][0..link_len], none when empty
+        link_start: usize = 0,
+        link_len: usize = 0,
     };
 
     // a url over content [start, end), linking to link_text[text_start..]
@@ -621,6 +626,7 @@ pub const TextBox = struct {
         errdefer {
             decoded.content.deinit(allocator);
             decoded.runs.deinit(allocator);
+            decoded.run_link_text.deinit(allocator);
         }
 
         const focus = try Focus.create(allocator, .text_box);
@@ -631,6 +637,7 @@ pub const TextBox = struct {
             .options = options,
             .content = decoded.content,
             .runs = decoded.runs,
+            .run_link_text = decoded.run_link_text,
             .lines = .empty,
         };
     }
@@ -643,6 +650,7 @@ pub const TextBox = struct {
         self.runs.deinit(allocator);
         self.links.deinit(allocator);
         self.link_text.deinit(allocator);
+        self.run_link_text.deinit(allocator);
     }
 
     pub fn setContent(self: *TextBox, allocator: std.mem.Allocator, content: []const u8) !void {
@@ -653,8 +661,10 @@ pub const TextBox = struct {
         const decoded = try decodeSpans(allocator, spans);
         self.content.deinit(allocator);
         self.runs.deinit(allocator);
+        self.run_link_text.deinit(allocator);
         self.content = decoded.content;
         self.runs = decoded.runs;
+        self.run_link_text = decoded.run_link_text;
     }
 
     pub fn build(self: *TextBox, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
@@ -718,9 +728,10 @@ pub const TextBox = struct {
                 while (run_index < self.runs.items.len and self.runs.items[run_index].end <= i) run_index += 1;
                 // the last run ends at the content length, so the fallback
                 // only matters for empty content
-                const run_style: Style = if (run_index < self.runs.items.len) self.runs.items[run_index].style else .{};
+                const run: Run = if (run_index < self.runs.items.len) self.runs.items[run_index] else .{ .end = 0, .style = .{} };
                 const cell = try grid.cell(x + border_size, y + border_size);
-                cell.style = run_style.over(self.options.style);
+                cell.style = run.style.over(self.options.style);
+                if (run.link_len != 0) cell.link = self.run_link_text.items[run.link_start..][0..run.link_len];
                 while (link_index < self.links.items.len and self.links.items[link_index].end <= i) link_index += 1;
                 if (link_index < self.links.items.len) {
                     const link = self.links.items[link_index];
@@ -810,19 +821,23 @@ pub const TextBox = struct {
         return c > ' ' and c < 0x7f and c != '<' and c != '>' and c != '"' and c != '`';
     }
 
-    fn decodeSpans(allocator: std.mem.Allocator, spans: []const Span) !struct { content: std.ArrayList(u21), runs: std.ArrayList(Run) } {
+    fn decodeSpans(allocator: std.mem.Allocator, spans: []const Span) !struct { content: std.ArrayList(u21), runs: std.ArrayList(Run), run_link_text: std.ArrayList(u8) } {
         var codepoints: std.ArrayList(u21) = .empty;
         errdefer codepoints.deinit(allocator);
         var runs: std.ArrayList(Run) = .empty;
         errdefer runs.deinit(allocator);
+        var run_link_text: std.ArrayList(u8) = .empty;
+        errdefer run_link_text.deinit(allocator);
         for (spans) |span| {
             var utf8 = (try std.unicode.Utf8View.init(span.text)).iterator();
             while (utf8.nextCodepoint()) |codepoint| {
                 try codepoints.append(allocator, codepoint);
             }
-            try runs.append(allocator, .{ .end = codepoints.items.len, .style = span.style });
+            const link = span.link orelse "";
+            try runs.append(allocator, .{ .end = codepoints.items.len, .style = span.style, .link_start = run_link_text.items.len, .link_len = link.len });
+            try run_link_text.appendSlice(allocator, link);
         }
-        return .{ .content = codepoints, .runs = runs };
+        return .{ .content = codepoints, .runs = runs, .run_link_text = run_link_text };
     }
 };
 
