@@ -93,7 +93,7 @@ const WidgetList = struct {
 
     pub fn init(allocator: std.mem.Allocator) !WidgetList {
         var self = blk: {
-            var inner_box = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .vert });
+            var inner_box = try wgt.Box(Widget).init(allocator, .{ .border = null, .direction = .vert });
             errdefer inner_box.deinit(allocator);
 
             var scroll = try wgt.Scroll(Widget).init(allocator, .{ .box = inner_box }, .{ .show_bar = true });
@@ -109,21 +109,21 @@ const WidgetList = struct {
         const inner_box = &self.scroll.child.box;
 
         {
-            var text_input = try wgt.TextInput.init(allocator, .{ .label = "username" });
+            var text_input = try wgt.TextInput.init(allocator, .{ .top_label = .{ .text = "username" } });
             errdefer text_input.deinit(allocator);
             text_input.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
         }
 
         {
-            var text_input = try wgt.TextInput.init(allocator, .{ .label = "password", .password = true });
+            var text_input = try wgt.TextInput.init(allocator, .{ .top_label = .{ .text = "password" }, .password = true });
             errdefer text_input.deinit(allocator);
             text_input.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
         }
 
         {
-            var text_input = try wgt.TextInput.init(allocator, .{ .label = "description", .multiline = true, .visible_height = 3 });
+            var text_input = try wgt.TextInput.init(allocator, .{ .top_label = .{ .text = "description" }, .multiline = true, .visible_height = 3 });
             errdefer text_input.deinit(allocator);
             text_input.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_input.getFocus().id, .{ .widget = .{ .text_input = text_input }, .rect = null, .min_size = null });
@@ -135,7 +135,7 @@ const WidgetList = struct {
                 .{ .text = "text ", .style = .{ .fg = .{ .ansi = .blue }, .italic = true } },
                 .{ .text = "in a ", .style = .{ .fg = .{ .ansi = .green } } },
                 .{ .text = "TextBox", .style = .{ .fg = .{ .rgb = .{ .r = 0, .g = 0, .b = 0 } }, .bg = .{ .rgb = .{ .r = 0xe5, .g = 0xc0, .b = 0x7b } }, .underline = true } },
-            }, .{ .border_style = .single, .wrap_kind = .word });
+            }, .{ .border = .single, .wrap_kind = .word });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
@@ -144,10 +144,10 @@ const WidgetList = struct {
         {
             // tabs: left/right switch between them, and the selected one is
             // drawn inverted (see build)
-            var tabs = try wgt.Box(Widget).init(allocator, .{ .border_style = null, .direction = .horiz });
+            var tabs = try wgt.Box(Widget).init(allocator, .{ .border = null, .direction = .horiz });
             errdefer tabs.deinit(allocator);
             for ([_][]const u8{ "files", "history", "settings" }) |name| {
-                var tab = try wgt.TextBox.init(allocator, name, .{ .border_style = .single, .wrap_kind = .none });
+                var tab = try wgt.TextBox.init(allocator, name, .{ .border = .single, .wrap_kind = .none });
                 errdefer tab.deinit(allocator);
                 tab.getFocus().mode = .all;
                 try tabs.children.put(allocator, tab.getFocus().id, .{ .widget = .{ .text_box = tab }, .rect = null, .min_size = null });
@@ -158,49 +158,49 @@ const WidgetList = struct {
         }
 
         {
-            var text_box = try wgt.TextBox.init(allocator, "双宽字符 (double-width characters)\n你好，世界！こんにちは", .{ .border_style = .single, .wrap_kind = .word });
+            var text_box = try wgt.TextBox.init(allocator, "双宽字符 (double-width characters)\n你好，世界！こんにちは", .{ .border = .single, .wrap_kind = .word });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
-            var text_box = try wgt.TextBox.init(allocator, "this is a TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            var text_box = try wgt.TextBox.init(allocator, "this is a TextBox", .{ .border = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
-            var text_box = try wgt.TextBox.init(allocator, "this is a\nmulti-line TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            var text_box = try wgt.TextBox.init(allocator, "this is a\nmulti-line TextBox", .{ .border = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
-            var text_box = try wgt.TextBox.init(allocator, "another TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            var text_box = try wgt.TextBox.init(allocator, "another TextBox", .{ .border = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
-            var text_box = try wgt.TextBox.init(allocator, "also a TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            var text_box = try wgt.TextBox.init(allocator, "also a TextBox", .{ .border = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
-            var text_box = try wgt.TextBox.init(allocator, "yet another TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            var text_box = try wgt.TextBox.init(allocator, "yet another TextBox", .{ .border = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });
         }
 
         {
-            var text_box = try wgt.TextBox.init(allocator, "one more TextBox", .{ .border_style = .single, .wrap_kind = .none });
+            var text_box = try wgt.TextBox.init(allocator, "one more TextBox", .{ .border = .single, .wrap_kind = .none });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;
             try inner_box.children.put(allocator, text_box.getFocus().id, .{ .widget = .{ .text_box = text_box }, .rect = null, .min_size = null });

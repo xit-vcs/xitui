@@ -4,77 +4,99 @@ const std = @import("std");
 const Grid = @import("./grid.zig").Grid;
 const wth = @import("./width.zig");
 
-pub const BorderStyle = enum {
-    hidden,
-    single,
-    double,
-    single_dashed,
-    double_dashed,
+// a border's line kind, with a style layered over its cells
+pub const Border = struct {
+    kind: Kind,
+    style: Grid.Style = .{},
+
+    pub const Kind = enum {
+        hidden,
+        single,
+        double,
+        single_dashed,
+        double_dashed,
+    };
+
+    pub const hidden: Border = .{ .kind = .hidden };
+    pub const single: Border = .{ .kind = .single };
+    pub const double: Border = .{ .kind = .double };
+    pub const single_dashed: Border = .{ .kind = .single_dashed };
+    pub const double_dashed: Border = .{ .kind = .double_dashed };
 };
 
-// overlay a label on the border row at `y`, truncating at the far corner.
-pub fn label(grid: *Grid, y: usize, text: []const u8) !void {
-    if (text.len == 0 or grid.size.width <= 2) return;
-    var label_iter = (try std.unicode.Utf8View.init(text)).iterator();
+// overlay a label on the border row at `y`, truncating at the far corner,
+// and return the column just past it.
+fn label(grid: *Grid, y: usize, span: Grid.Span) !usize {
     var x: usize = 1;
+    if (span.text.len == 0 or grid.size.width <= 2) return x;
+    var label_iter = (try std.unicode.Utf8View.init(span.text)).iterator();
     while (label_iter.nextCodepoint()) |ch| {
         const w = wth.cellWidth(ch);
         if (x + w > grid.size.width - 1) break;
-        try grid.setRune(x, y, ch);
+        try setStyledRune(grid, x, y, ch, span.style);
         x += w;
     }
+    return x;
+}
+
+// set a rune with `style` layered over its cell's style
+fn setStyledRune(grid: *Grid, x: usize, y: usize, rune: u21, style: Grid.Style) !void {
+    const target = try grid.cell(x, y);
+    target.style = style.over(target.style);
+    try grid.setRune(x, y, rune);
 }
 
 // draw a border (and its labels) around the outermost cells of the grid.
-pub fn border(grid: *Grid, border_style: BorderStyle, round_corners: bool, top_label: []const u8, bottom_label: []const u8) !void {
-    const dashed = border_style == .single_dashed or border_style == .double_dashed;
-    const horiz_line: u21 = switch (border_style) {
+pub fn border(grid: *Grid, spec: Border, round_corners: bool, top_label: Grid.Span, bottom_label: Grid.Span) !void {
+    const kind = spec.kind;
+    const dashed = kind == .single_dashed or kind == .double_dashed;
+    const horiz_line: u21 = switch (kind) {
         .hidden => ' ',
         .single, .single_dashed => '─',
         .double, .double_dashed => '═',
     };
-    const vert_line: u21 = switch (border_style) {
+    const vert_line: u21 = switch (kind) {
         .hidden => ' ',
         .single, .single_dashed => '│',
         .double, .double_dashed => '║',
     };
-    const top_left: u21 = switch (border_style) {
+    const top_left: u21 = switch (kind) {
         .hidden => ' ',
         .single, .single_dashed => if (round_corners) '╭' else '┌',
         .double, .double_dashed => if (round_corners) '╭' else '╔',
     };
-    const top_right: u21 = switch (border_style) {
+    const top_right: u21 = switch (kind) {
         .hidden => ' ',
         .single, .single_dashed => if (round_corners) '╮' else '┐',
         .double, .double_dashed => if (round_corners) '╮' else '╗',
     };
-    const bottom_left: u21 = switch (border_style) {
+    const bottom_left: u21 = switch (kind) {
         .hidden => ' ',
         .single, .single_dashed => if (round_corners) '╰' else '└',
         .double, .double_dashed => if (round_corners) '╰' else '╚',
     };
-    const bottom_right: u21 = switch (border_style) {
+    const bottom_right: u21 = switch (kind) {
         .hidden => ' ',
         .single, .single_dashed => if (round_corners) '╯' else '┘',
         .double, .double_dashed => if (round_corners) '╯' else '╝',
     };
+    // the labels go first, so the line's style doesn't reach their cells
+    const top_end = try label(grid, 0, top_label);
+    const bottom_end = try label(grid, grid.size.height - 1, bottom_label);
     for (1..grid.size.width - 1) |x| {
         if (dashed and x % 2 == 1) continue;
-        try grid.setRune(x, 0, horiz_line);
-        try grid.setRune(x, grid.size.height - 1, horiz_line);
+        if (x >= top_end) try setStyledRune(grid, x, 0, horiz_line, spec.style);
+        if (x >= bottom_end) try setStyledRune(grid, x, grid.size.height - 1, horiz_line, spec.style);
     }
     for (1..grid.size.height - 1) |y| {
         if (dashed and y % 2 == 0) continue;
-        try grid.setRune(0, y, vert_line);
-        try grid.setRune(grid.size.width - 1, y, vert_line);
+        try setStyledRune(grid, 0, y, vert_line, spec.style);
+        try setStyledRune(grid, grid.size.width - 1, y, vert_line, spec.style);
     }
-    try grid.setRune(0, 0, top_left);
-    try grid.setRune(grid.size.width - 1, 0, top_right);
-    try grid.setRune(0, grid.size.height - 1, bottom_left);
-    try grid.setRune(grid.size.width - 1, grid.size.height - 1, bottom_right);
-
-    try label(grid, 0, top_label);
-    try label(grid, grid.size.height - 1, bottom_label);
+    try setStyledRune(grid, 0, 0, top_left, spec.style);
+    try setStyledRune(grid, grid.size.width - 1, 0, top_right, spec.style);
+    try setStyledRune(grid, 0, grid.size.height - 1, bottom_left, spec.style);
+    try setStyledRune(grid, grid.size.width - 1, grid.size.height - 1, bottom_right, spec.style);
 }
 
 // the solid run that represents the visible portion of the content.

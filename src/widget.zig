@@ -8,7 +8,7 @@ const inp = @import("./input.zig");
 const wth = @import("./width.zig");
 const draw = @import("./draw.zig");
 
-pub const BorderStyle = draw.BorderStyle;
+pub const Border = draw.Border;
 
 pub const Text = struct {
     focus: *Focus,
@@ -87,12 +87,12 @@ pub const BoxDirection = enum {
 };
 
 pub const BoxOptions = struct {
-    border_style: ?draw.BorderStyle,
+    border: ?draw.Border,
     round_corners: bool = false,
     direction: BoxDirection,
     // optional labels rendered over the top and bottom borders.
-    label: []const u8 = "",
-    bottom_label: []const u8 = "",
+    top_label: Span = .{},
+    bottom_label: Span = .{},
     // force each child to fill the cross axis when it's bounded.
     stretch: bool = false,
     // blank cells between laid-out children along the main axis
@@ -152,7 +152,7 @@ pub fn Box(comptime Widget: type) type {
         pub fn build(self: *Box(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
 
-            const border_size: usize = if (self.options.border_style) |_| 1 else 0;
+            const border_size: usize = if (self.options.border) |_| 1 else 0;
             if (constraint.max_size.width) |max_width| {
                 if (max_width <= border_size * 2) return;
             }
@@ -445,7 +445,7 @@ pub fn Box(comptime Widget: type) type {
 
             // widen for the labels, up to the width we're allowed
             if (border_size > 0) {
-                const label_min = @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label));
+                const label_min = @max(try wth.displayWidth(self.options.top_label.text), try wth.displayWidth(self.options.bottom_label.text));
                 if (label_min > 0) {
                     width = @max(width, label_min + border_size * 2);
                     if (constraint.max_size.width) |max_width| width = @min(width, max_width);
@@ -505,8 +505,8 @@ pub fn Box(comptime Widget: type) type {
                 },
             }
 
-            if (self.options.border_style) |border_style| {
-                try draw.border(&grid, border_style, self.options.round_corners, self.options.label, self.options.bottom_label);
+            if (self.options.border) |border| {
+                try draw.border(&grid, border, self.options.round_corners, self.options.top_label, self.options.bottom_label);
             }
             if (self.options.invert) grid.invert();
 
@@ -564,12 +564,12 @@ pub const WrapKind = enum {
 };
 
 pub const TextBoxOptions = struct {
-    border_style: ?draw.BorderStyle,
+    border: ?draw.Border,
     round_corners: bool = false,
     wrap_kind: WrapKind,
     // optional labels rendered over the top and bottom borders.
-    label: []const u8 = "",
-    bottom_label: []const u8 = "",
+    top_label: Span = .{},
+    bottom_label: Span = .{},
     // style for the whole box, border included; span styles layer over it
     style: Style = .{},
     // swap text and background colors across the whole box, border
@@ -669,7 +669,7 @@ pub const TextBox = struct {
 
     pub fn build(self: *TextBox, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
         self.clearGrid();
-        const border_size: usize = if (self.options.border_style) |_| 1 else 0;
+        const border_size: usize = if (self.options.border) |_| 1 else 0;
         if (constraint.max_size.width) |max_width| {
             if (max_width <= border_size * 2) return;
         }
@@ -684,11 +684,11 @@ pub const TextBox = struct {
         try self.findLinks(allocator);
 
         const focused = root_focus.grandchild_id == self.getFocus().id;
-        const border_style: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
+        const border: ?draw.Border = if (self.options.border) |base| .{ .kind = switch (base.kind) {
             .single => if (focused) .double else .single,
             .single_dashed => if (focused) .double_dashed else .single_dashed,
-            .hidden, .double, .double_dashed => base,
-        } else null;
+            .hidden, .double, .double_dashed => base.kind,
+        }, .style = base.style } else null;
 
         const max_lines = if (constraint.max_size.height) |height| height - border_size * 2 else self.lines.items.len;
         const visible_lines = @min(self.lines.items.len, max_lines);
@@ -705,7 +705,7 @@ pub const TextBox = struct {
         height = @max(height, constraint.min_size.height orelse height);
 
         if (border_size > 0) {
-            const label_width = @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label));
+            const label_width = @max(try wth.displayWidth(self.options.top_label.text), try wth.displayWidth(self.options.bottom_label.text));
             if (label_width > 0) {
                 width = @max(width, label_width + border_size * 2);
                 if (constraint.max_size.width) |max_width| width = @min(width, max_width);
@@ -743,8 +743,8 @@ pub const TextBox = struct {
         }
 
         self.focus.clear();
-        if (border_style) |style| {
-            try draw.border(&grid, style, self.options.round_corners, self.options.label, self.options.bottom_label);
+        if (border) |b| {
+            try draw.border(&grid, b, self.options.round_corners, self.options.top_label, self.options.bottom_label);
         }
         if (self.options.invert) grid.invert();
 
@@ -954,7 +954,7 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
 }
 
 pub const TextInputOptions = struct {
-    border_style: ?draw.BorderStyle = .single_dashed,
+    border: ?draw.Border = .single_dashed,
     round_corners: bool = false,
     // visible width in codepoints, excluding the border (null = fill
     // the available width)
@@ -964,8 +964,8 @@ pub const TextInputOptions = struct {
     password: bool = false,
     // optional labels rendered over the top and bottom borders. when
     // empty, that border is drawn unchanged.
-    label: []const u8 = "",
-    bottom_label: []const u8 = "",
+    top_label: Span = .{},
+    bottom_label: Span = .{},
     // optional form-field name; the web renderer emits it as the
     // HTML `name` attribute so the value is submitted with that key.
     name: []const u8 = "",
@@ -1151,10 +1151,10 @@ pub const TextInput = struct {
     pub fn build(self: *TextInput, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
         self.clearGrid();
 
-        const effective_border: ?draw.BorderStyle = if (self.options.border_style) |base| switch (base) {
+        const effective_border: ?draw.Border = if (self.options.border) |base| .{ .kind = switch (base.kind) {
             .hidden => .hidden,
             else => if (root_focus.grandchild_id == self.focus.id) .double_dashed else .single_dashed,
-        } else null;
+        }, .style = base.style } else null;
 
         const border_size: usize = if (effective_border) |_| 1 else 0;
         const height: usize = 1 + border_size * 2;
@@ -1169,7 +1169,7 @@ pub const TextInput = struct {
             const visible_width = self.options.visible_width orelse break :blk constraint.max_size.width orelse return;
             // widen for the labels so they stay visible between the corners
             const label_min = if (border_size > 0)
-                @max(try wth.displayWidth(self.options.label), try wth.displayWidth(self.options.bottom_label))
+                @max(try wth.displayWidth(self.options.top_label.text), try wth.displayWidth(self.options.bottom_label.text))
             else
                 0;
             const desired_width = @max(visible_width, label_min) + border_size * 2;
@@ -1241,8 +1241,8 @@ pub const TextInput = struct {
         }
 
         // border
-        if (effective_border) |border_style| {
-            try draw.border(&grid, border_style, self.options.round_corners, self.options.label, self.options.bottom_label);
+        if (effective_border) |border| {
+            try draw.border(&grid, border, self.options.round_corners, self.options.top_label, self.options.bottom_label);
         }
         if (self.options.invert) grid.invert();
 
@@ -1257,7 +1257,7 @@ pub const TextInput = struct {
         return @min(wanted, avail_rows orelse wanted);
     }
 
-    fn buildMultiline(self: *TextInput, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus, effective_border: ?draw.BorderStyle, width: usize, inner_width: usize) !void {
+    fn buildMultiline(self: *TextInput, allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus, effective_border: ?draw.Border, width: usize, inner_width: usize) !void {
         const border_size: usize = if (effective_border) |_| 1 else 0;
 
         // rows the constraint allows; null = unbounded. A bounded height
@@ -1340,8 +1340,8 @@ pub const TextInput = struct {
             }
         }
 
-        if (effective_border) |border_style| {
-            try draw.border(&grid, border_style, self.options.round_corners, self.options.label, self.options.bottom_label);
+        if (effective_border) |border| {
+            try draw.border(&grid, border, self.options.round_corners, self.options.top_label, self.options.bottom_label);
         }
         if (self.options.invert) grid.invert();
 
