@@ -1001,7 +1001,7 @@ fn parseBackgroundReport(body: []const u8) ?grd.Grid.Color.Rgb {
     return .{ .r = rgb[0], .g = rgb[1], .b = rgb[2] };
 }
 
-fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
+fn parseSgrMouse(buffer: []const u8) ?inp.Key {
     // buffer at this point looks like: ESC '[' '<' Cb ';' Cx ';' Cy
     if (buffer.len < 4) return null;
     if (buffer[0] != '\x1B' or buffer[1] != '[' or buffer[2] != '<') return null;
@@ -1020,7 +1020,10 @@ fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
     const ctrl = cb & 0x10 != 0;
 
     // bit 6 (0x40) flags a scroll event; lower bit is direction
-    if (cb & 0x40 != 0) return if (cb & 0x01 == 0) .scroll_up else .scroll_down;
+    if (cb & 0x40 != 0) {
+        const position: inp.Position = .{ .x = x, .y = y };
+        return if (cb & 0x01 == 0) .{ .scroll_up = position } else .{ .scroll_down = position };
+    }
 
     const button: inp.MouseButton = switch (cb & 0x03) {
         0 => .left,
@@ -1029,12 +1032,7 @@ fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
         // 3 means "no button" (motion-release in legacy mode); ignore
         else => return null,
     };
-    return .{ .mouse = .{
-        .x = x,
-        .y = y,
-        .action = if (press) .{ .press = button } else .{ .release = button },
-        .ctrl = ctrl,
-    } };
+    return .{ .mouse = .{ .x = x, .y = y, .button = button, .ctrl = ctrl } };
 }
 
 pub fn clearRect(writer: *std.Io.Writer, x: usize, y: usize, size: Size) !void {
@@ -1310,7 +1308,9 @@ pub const EscapeParser = struct {
                     'Q' => .{ .f = 2 },
                     'R' => .{ .f = 3 },
                     'S' => .{ .f = 4 },
-                    'M', 'm' => parseSgrMouse(self.esc_buffer[0..self.esc_len], byte == 'M') orelse .unknown,
+                    'M' => parseSgrMouse(self.esc_buffer[0..self.esc_len]) orelse .unknown,
+                    // a button release
+                    'm' => .unknown,
                     '~' => blk: {
                         var codes = std.mem.splitSequence(u8, self.esc_buffer[2..self.esc_len], ";");
                         const code = codes.first();

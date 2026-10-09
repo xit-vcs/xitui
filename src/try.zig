@@ -68,7 +68,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             switch (key) {
                 .escape => return,
                 .mouse => |mouse| {
-                    if (mouse.action == .press and mouse.action.press == .left) {
+                    if (mouse.button == .left) {
                         const root_focus = root.getFocus();
                         if (root_focus.hitTest(mouse.x, mouse.y)) |hit| root_focus.setFocus(hit.id);
                     } else {

@@ -6,9 +6,9 @@ pub const Key = union(enum) {
     arrow_down,
     arrow_right,
     arrow_left,
-    // a scroll wheel or trackpad tick
-    scroll_up,
-    scroll_down,
+    // a scroll wheel or trackpad tick, at the pointer's cell
+    scroll_up: Position,
+    scroll_down: Position,
     home,
     end,
     page_up,
@@ -43,16 +43,17 @@ pub const Key = union(enum) {
     },
 };
 
+pub const Position = struct {
+    x: usize,
+    y: usize,
+};
+
+// a button press at the pointer's cell. releases aren't reported.
 pub const Mouse = struct {
     x: usize,
     y: usize,
-    action: MouseAction,
+    button: MouseButton,
     ctrl: bool = false,
-};
-
-pub const MouseAction = union(enum) {
-    press: MouseButton,
-    release: MouseButton,
 };
 
 pub const MouseButton = enum {
