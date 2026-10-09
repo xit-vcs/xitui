@@ -1601,6 +1601,12 @@ pub fn Scroll(comptime Widget: type) type {
                     try draw.scrollBarHoriz(&grid, 0, content_h, content_w, child_grid.size.width, content_w, self.x);
                 }
                 self.grid = grid;
+                self.getFocus().scroll = .{
+                    .content = child_grid,
+                    .offset_x = self.x,
+                    .offset_y = self.y,
+                    .direction = dir,
+                };
 
                 // the child registered its focusable descendants at content-space
                 // coordinates; shift them into the viewport (by the scroll offset)
