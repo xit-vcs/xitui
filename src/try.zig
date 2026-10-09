@@ -314,14 +314,9 @@ const WidgetList = struct {
                             }
                         }
                     },
-                    .mouse => |mouse| switch (mouse.action) {
-                        .scroll => |dir| switch (dir) {
-                            .up => index -|= 1,
-                            .down => if (index + 1 < children.count()) {
-                                index += 1;
-                            },
-                        },
-                        else => {},
+                    .scroll_up => index -|= 1,
+                    .scroll_down => if (index + 1 < children.count()) {
+                        index += 1;
                     },
                     else => {},
                 }

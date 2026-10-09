@@ -6,6 +6,9 @@ pub const Key = union(enum) {
     arrow_down,
     arrow_right,
     arrow_left,
+    // a scroll wheel or trackpad tick
+    scroll_up,
+    scroll_down,
     home,
     end,
     page_up,
@@ -50,16 +53,10 @@ pub const Mouse = struct {
 pub const MouseAction = union(enum) {
     press: MouseButton,
     release: MouseButton,
-    scroll: ScrollDirection,
 };
 
 pub const MouseButton = enum {
     left,
     middle,
     right,
-};
-
-pub const ScrollDirection = enum {
-    up,
-    down,
 };

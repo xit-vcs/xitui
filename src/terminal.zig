@@ -978,11 +978,8 @@ fn parseSgrMouse(buffer: []const u8, press: bool) ?inp.Key {
     const y: usize = if (cy > 0) cy - 1 else 0;
     const ctrl = cb & 0x10 != 0;
 
-    // bit 6 (0x40) flags a wheel event; lower bit is direction
-    if (cb & 0x40 != 0) {
-        const dir: inp.ScrollDirection = if (cb & 0x01 == 0) .up else .down;
-        return .{ .mouse = .{ .x = x, .y = y, .action = .{ .scroll = dir }, .ctrl = ctrl } };
-    }
+    // bit 6 (0x40) flags a scroll event; lower bit is direction
+    if (cb & 0x40 != 0) return if (cb & 0x01 == 0) .scroll_up else .scroll_down;
 
     const button: inp.MouseButton = switch (cb & 0x03) {
         0 => .left,
