@@ -10,6 +10,37 @@ const write_buffer_size = 4096;
 pub var quit = std.atomic.Value(bool).init(false);
 var resized = std.atomic.Value(bool).init(false);
 
+// keep escape deadlines across reads so non-blocking calls never wait
+const InputDeadline = struct {
+    last_byte: std.Io.Timestamp = .zero,
+
+    fn received(self: *InputDeadline, io: std.Io) void {
+        self.last_byte = .now(io, .awake);
+    }
+
+    fn remaining(self: InputDeadline, io: std.Io, parser: *const EscapeParser) ?i32 {
+        if (parser.esc_len == 0) return null;
+        // posix blocking reads can't time out sooner than VTIME's 100 ms, so
+        // every fragment gets that window there to match
+        const idle_ms: i96 = if (builtin.target.os.tag == .windows and parser.isAmbiguous()) 25 else 100;
+        const elapsed = std.Io.Timestamp.now(io, .awake).nanoseconds - self.last_byte.nanoseconds;
+        const ns = @max(0, idle_ms * std.time.ns_per_ms - elapsed);
+        return @intCast(@divTrunc(ns + std.time.ns_per_ms - 1, std.time.ns_per_ms));
+    }
+
+    fn waitMilliseconds(self: InputDeadline, io: std.Io, parser: *const EscapeParser, blocking: bool) i32 {
+        if (!blocking) return 0;
+        // wake periodically to check quit/resize
+        return self.remaining(io, parser) orelse 100;
+    }
+
+    fn expire(self: InputDeadline, io: std.Io, parser: *EscapeParser) !void {
+        if (self.remaining(io, parser)) |ms| {
+            if (ms == 0) try parser.expireEscape();
+        }
+    }
+};
+
 pub const Core = switch (builtin.target.os.tag) {
     .windows => struct {
         tty: Tty,
@@ -17,6 +48,7 @@ pub const Core = switch (builtin.target.os.tag) {
         writer: Tty.Writer,
         allocator: std.mem.Allocator,
         parser: EscapeParser,
+        input_deadline: InputDeadline = .{},
         high_surrogate: ?u16 = null,
 
         pub const KEY_EVENT_RECORD = extern struct {
@@ -295,7 +327,7 @@ pub const Core = switch (builtin.target.os.tag) {
 
         // virtual terminal input delivers the input stream one utf-16 unit
         // per key-down event
-        fn queueKeyEvent(self: *Core, event: KEY_EVENT_RECORD) !void {
+        fn queueKeyEvent(self: *Core, io: std.Io, event: KEY_EVENT_RECORD) !void {
             if (event.bKeyDown == .FALSE) return;
             const unit = event.uChar.UnicodeChar;
             // modifier-only key presses carry no character
@@ -313,21 +345,20 @@ pub const Core = switch (builtin.target.os.tag) {
             var utf8: [4]u8 = undefined;
             const len = std.unicode.utf8Encode(codepoint, &utf8) catch return;
             for (0..@max(1, event.wRepeatCount)) |_| try self.parser.queueBytes(utf8[0..len]);
+            self.input_deadline.received(io);
         }
 
-        fn readKey(self: *Core, _: std.Io, blocking: bool) !?inp.Key {
+        fn readKey(self: *Core, io: std.Io, blocking: bool) !?inp.Key {
             const in_handle = std.Io.File.stdin().handle;
             while (!quit.load(.monotonic)) {
                 if (resized.swap(false, .monotonic)) return .{ .event = .resize };
                 if (self.parser.popQueued()) |key| return key;
 
-                // ambiguous input gets a short wait even when not blocking, so a
-                // lone escape resolves once the rest of a sequence can't be coming
-                const timeout: std.os.windows.DWORD = if (blocking) 100 else if (self.parser.isAmbiguous()) 25 else 0;
+                const timeout: std.os.windows.DWORD = @intCast(self.input_deadline.waitMilliseconds(io, &self.parser, blocking));
                 waitForSingleObject(in_handle, timeout) catch |err| switch (err) {
                     error.WaitAbandoned => return null,
                     error.WaitTimeOut => {
-                        try self.parser.flushEscape();
+                        try self.input_deadline.expire(io, &self.parser);
                         if (self.parser.popQueued()) |key| return key;
                         if (blocking) continue else return null;
                     },
@@ -342,13 +373,14 @@ pub const Core = switch (builtin.target.os.tag) {
                 }
                 for (records[0..num_records]) |record| switch (record.EventType) {
                     // KEY_EVENT
-                    0x0001 => try self.queueKeyEvent(record.Event.KeyEvent),
+                    0x0001 => try self.queueKeyEvent(io, record.Event.KeyEvent),
                     // WINDOW_BUFFER_SIZE_EVENT
                     0x0004 => resized.store(true, .monotonic),
                     // MOUSE_EVENT, MENU_EVENT, FOCUS_EVENT
                     0x0002, 0x0008, 0x0010 => {},
                     else => return error.UnrecognizedEventType,
                 };
+                // keys and resizes are delivered at the top of the loop
                 if (!blocking and num_records == 0) return null;
             }
             return null;
@@ -362,6 +394,7 @@ pub const Core = switch (builtin.target.os.tag) {
         cooked_termios: std.posix.termios,
         raw: std.posix.termios,
         parser: EscapeParser,
+        input_deadline: InputDeadline = .{},
 
         fn uncook(self: *Core) !void {
             self.cooked_termios = try std.posix.tcgetattr(self.tty.handle);
@@ -379,8 +412,10 @@ pub const Core = switch (builtin.target.os.tag) {
             // dies on ctrl+c before we cook, the shell can snapshot our raw
             // state and keep it, skewing the output of later commands.
             self.raw.cflag.CSIZE = .CS8;
-            self.raw.cc[@backingInt(std.posix.V.TIME)] = 0;
-            self.raw.cc[@backingInt(std.posix.V.MIN)] = 1;
+            // reads return as soon as bytes arrive, or empty after 100 ms
+            // idle, so the read loop can check quit/resize
+            self.raw.cc[@backingInt(std.posix.V.TIME)] = 1;
+            self.raw.cc[@backingInt(std.posix.V.MIN)] = 0;
             try std.posix.tcsetattr(self.tty.handle, .FLUSH, self.raw);
 
             try hideCursor(&self.writer.interface);
@@ -402,22 +437,15 @@ pub const Core = switch (builtin.target.os.tag) {
         }
 
         fn readKey(self: *Core, io: std.Io, blocking: bool) !?inp.Key {
-            if (blocking) {
-                // the tty is in raw mode with VMIN=0, VTIME=1, so each
-                // non-blocking read already blocks for up to 100 ms. loop on
-                // it until a key arrives, the terminal resizes, or we quit.
-                while (!quit.load(.monotonic)) {
-                    if (resized.swap(false, .monotonic)) return .{ .event = .resize };
-                    if (try self.readKey(io, false)) |key| return key;
-                }
-
-                return null;
-            } else {
-                if (resized.swap(false, .monotonic)) {
-                    return .{ .event = .resize };
-                }
-
+            while (!quit.load(.monotonic)) {
+                if (resized.swap(false, .monotonic)) return .{ .event = .resize };
                 if (self.parser.popQueued()) |key| return key;
+
+                // non-blocking: don't read unless bytes are already waiting
+                if (!blocking and try self.bytesAvailable() == 0) {
+                    try self.input_deadline.expire(io, &self.parser);
+                    return self.parser.popQueued();
+                }
 
                 const buffer_size = 32;
                 var buffer: [buffer_size]u8 = undefined;
@@ -426,13 +454,25 @@ pub const Core = switch (builtin.target.os.tag) {
                     else => |e| return e,
                 };
                 if (size == 0) {
-                    // the timed read went idle; resolve a lone escape only
-                    // after giving the rest of a split sequence time to arrive
-                    try self.parser.flushEscape();
+                    // 100 ms idle: any fragment is stale
+                    try self.parser.expireEscape();
                 } else {
                     try self.parser.queueBytes(buffer[0..size]);
+                    self.input_deadline.received(io);
                 }
-                return self.parser.popQueued();
+                if (!blocking) return self.parser.popQueued();
+            }
+            return null;
+        }
+
+        fn bytesAvailable(self: *Core) !usize {
+            // darwin's std.c.T lacks FIONREAD
+            const fionread = if (@hasDecl(std.posix.T, "FIONREAD")) std.posix.T.FIONREAD else 0x4004667f;
+            var n: c_int = 0;
+            const rc = std.posix.system.ioctl(self.tty.handle, fionread, @intFromPtr(&n));
+            switch (std.posix.errno(rc)) {
+                .SUCCESS => return @intCast(@max(0, n)),
+                else => |err| return std.posix.unexpectedErrno(err),
             }
         }
     },
@@ -519,6 +559,12 @@ pub const Terminal = struct {
                     .mask = std.posix.sigemptyset(),
                     .flags = 0,
                 }, null);
+                // the tty hung up
+                std.posix.sigaction(std.posix.SIG.HUP, &.{
+                    .handler = .{ .handler = handler },
+                    .mask = std.posix.sigemptyset(),
+                    .flags = 0,
+                }, null);
 
                 const resize_handler = struct {
                     fn run(_: std.posix.SIG) callconv(.c) void {
@@ -530,11 +576,6 @@ pub const Terminal = struct {
                     .mask = std.posix.sigemptyset(),
                     .flags = 0,
                 }, null);
-
-                // set non-blocking
-                self.core.raw.cc[@backingInt(std.posix.V.TIME)] = 1;
-                self.core.raw.cc[@backingInt(std.posix.V.MIN)] = 0;
-                try std.posix.tcsetattr(self.core.tty.handle, .NOW, self.core.raw);
 
                 self.size = try self.getSize();
 
@@ -1147,6 +1188,17 @@ pub const EscapeParser = struct {
             const byte = self.esc_buffer[1];
             self.clearScratch();
             try self.append(.{ .alt = byte });
+        }
+    }
+
+    // abandon an idle fragment before it swallows more typing. native
+    // terminals wait 100 ms (25 ms for ambiguous fragments on windows);
+    // stream drivers can allow for transport delays.
+    pub fn expireEscape(self: *EscapeParser) !void {
+        if (self.isAmbiguous()) {
+            try self.flushEscape();
+        } else if (self.esc_len > 0) {
+            try self.abortSequence();
         }
     }
 

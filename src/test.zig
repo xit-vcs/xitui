@@ -500,6 +500,36 @@ test "StreamTerminal parses alt+letter" {
     try std.testing.expectEqual(@as(?inp.Key, .escape), terminal.popKey());
 }
 
+test "StreamTerminal expires an idle escape fragment" {
+    const allocator = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+
+    var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 80, .height = 24 });
+    defer terminal.deinit();
+
+    // a partial CSI is discarded and later typing arrives intact
+    try terminal.writeBytes("\x1B[1;");
+    try std.testing.expectEqual(@as(?inp.Key, null), terminal.popKey());
+    try terminal.expireEscape();
+    try std.testing.expectEqual(@as(?inp.Key, .unknown), terminal.popKey());
+    try terminal.writeBytes("ab");
+    try std.testing.expectEqual(@as(u21, 'a'), terminal.popKey().?.codepoint);
+    try std.testing.expectEqual(@as(u21, 'b'), terminal.popKey().?.codepoint);
+    try std.testing.expectEqual(@as(?inp.Key, null), terminal.popKey());
+
+    // a lone ESC is the escape key
+    try terminal.writeBytes("\x1B");
+    try terminal.expireEscape();
+    try std.testing.expectEqual(@as(?inp.Key, .escape), terminal.popKey());
+
+    // a lone introducer is an alt combo
+    try terminal.writeBytes("\x1B[");
+    try terminal.expireEscape();
+    try std.testing.expectEqual(@as(?inp.Key, .{ .alt = '[' }), terminal.popKey());
+    try std.testing.expectEqual(@as(?inp.Key, null), terminal.popKey());
+}
+
 test "StreamTerminal keeps keys in arrival order across feeds" {
     const allocator = std.testing.allocator;
     var output: std.Io.Writer.Allocating = .init(allocator);

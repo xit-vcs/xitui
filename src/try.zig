@@ -62,6 +62,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         // reads. we do not want to sleep the thread because
         // there may be an animation that requires more looping.
         var blocking = !grid_changed;
+        var input_count: usize = 0;
         while (try terminal.readKey(io, blocking)) |key| {
             blocking = false;
             switch (key) {
@@ -76,6 +77,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 },
                 else => try root.input(allocator, key, root.getFocus()),
             }
+            // yield to rendering even when input arrives continuously
+            input_count += 1;
+            if (input_count == 64) break;
         }
 
         // rebuild widget

@@ -87,6 +87,13 @@ pub const StreamTerminal = struct {
         try self.parser.flushEscape();
     }
 
+    // discard an idle fragment before it swallows more typing. native
+    // terminals wait 100 ms (25 ms for ambiguous fragments on windows);
+    // allow more for slower transports.
+    pub fn expireEscape(self: *StreamTerminal) !void {
+        try self.parser.expireEscape();
+    }
+
     // pop the next decoded input event: a queued key, a pending resize, or
     // null if there's nothing to deliver right now.
     pub fn popKey(self: *StreamTerminal) ?inp.Key {
