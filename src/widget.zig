@@ -466,7 +466,7 @@ pub fn Box(comptime Widget: type) type {
                         if (child.widget.getGrid()) |child_grid| {
                             if (!first) line += self.options.gap;
                             first = false;
-                            child.rect = .{ .x = 0, .y = @as(isize, @intCast(line + border_size)), .size = child_grid.size };
+                            child.rect = .{ .x = @as(isize, @intCast(border_size)), .y = @as(isize, @intCast(line + border_size)), .size = child_grid.size };
                             try grid.drawGrid(child_grid, border_size, line + border_size);
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, border_size, line + border_size);
                             line += child_grid.size.height;
@@ -488,7 +488,7 @@ pub fn Box(comptime Widget: type) type {
                         if (child.widget.getGrid()) |child_grid| {
                             if (!first) col += self.options.gap;
                             first = false;
-                            child.rect = .{ .x = @as(isize, @intCast(col + border_size)), .y = 0, .size = child_grid.size };
+                            child.rect = .{ .x = @as(isize, @intCast(col + border_size)), .y = @as(isize, @intCast(border_size)), .size = child_grid.size };
                             try grid.drawGrid(child_grid, col + border_size, border_size);
                             try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, col + border_size, border_size);
                             col += child_grid.size.width;
