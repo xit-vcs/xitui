@@ -1453,6 +1453,10 @@ pub fn Scroll(comptime Widget: type) type {
         // viewport math in sync with what was rendered.
         bar_w: usize,
         bar_h: usize,
+        // the content viewport of the last build, bars excluded. unlike the grid
+        // it survives clearGrid, so scrollToRect still works while a parent
+        // rebuilds this scroll.
+        viewport: ?layout.Size = null,
 
         // subtract a scroll bar's reserved column/row from an optional size
         // constraint, keeping at least one cell. a null (unbounded) size stays null.
@@ -1537,6 +1541,7 @@ pub fn Scroll(comptime Widget: type) type {
                     const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
                     self.clampOffsets(child_grid.size, content_w, content_h);
                     self.grid = try Grid.initFromGrid(allocator, child_grid, .{ .width = content_w, .height = content_h }, 0, 0);
+                    self.viewport = .{ .width = content_w, .height = content_h };
                     self.getFocus().scroll = .{
                         .content = child_grid,
                         .offset_x = self.x,
@@ -1601,6 +1606,7 @@ pub fn Scroll(comptime Widget: type) type {
                     try draw.scrollBarHoriz(&grid, 0, content_h, content_w, child_grid.size.width, content_w, self.x);
                 }
                 self.grid = grid;
+                self.viewport = .{ .width = content_w, .height = content_h };
                 self.getFocus().scroll = .{
                     .content = child_grid,
                     .offset_x = self.x,
@@ -1648,11 +1654,9 @@ pub fn Scroll(comptime Widget: type) type {
         }
 
         pub fn scrollToRect(self: *Scroll(Widget), rect: layout.IRect) void {
-            if (self.grid) |grid| {
-                // the bar's reserved column/row isn't part of the content
-                // viewport, so exclude it when computing scroll bounds.
-                const content_width = grid.size.width - self.bar_w;
-                const content_height = grid.size.height - self.bar_h;
+            if (self.viewport) |viewport| {
+                const content_width = viewport.width;
+                const content_height = viewport.height;
                 if (self.options.direction == .horiz or self.options.direction == .both) {
                     if (rect.x < self.x) {
                         self.x -= self.x - rect.x;
