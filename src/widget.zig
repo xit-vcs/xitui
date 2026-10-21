@@ -111,6 +111,8 @@ pub fn Box(comptime Widget: type) type {
         grid: ?Grid,
         children: std.array_hash_map.Auto(usize, Child),
         options: BoxOptions,
+        // the child whose grid the box shows instead of a copy
+        pass_through: ?usize = null,
 
         pub const Flex = enum {
             none,
@@ -452,66 +454,56 @@ pub fn Box(comptime Widget: type) type {
                 }
             }
 
-            var grid = try Grid.init(allocator, .{ .width = width, .height = height });
-            errdefer grid.deinit();
-            grid.fill(self.options.style);
-
             self.getFocus().clear();
 
-            switch (self.options.direction) {
-                .vert => {
-                    var line: usize = 0;
-                    var first = true;
-                    for (self.children.values()) |*child| {
-                        if (child.widget.getGrid()) |child_grid| {
-                            if (!first) line += self.options.gap;
-                            first = false;
-                            child.rect = .{ .x = @as(isize, @intCast(border_size)), .y = @as(isize, @intCast(line + border_size)), .size = child_grid.size };
-                            try grid.drawGrid(child_grid, border_size, line + border_size);
-                            try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, border_size, line + border_size);
-                            line += child_grid.size.height;
-                        } else {
-                            // this child wasn't laid out this build (it didn't fit,
-                            // so it has no grid). drop its stale focus subtree so it
-                            // isn't flattened upward, which would leave phantom
-                            // focusables/scrolls behind from when it was last shown.
-                            child.widget.getFocus().clear();
+            // place each laid-out child after the last along the main axis
+            var offset: usize = 0;
+            var first = true;
+            for (self.children.values()) |*child| {
+                if (child.widget.getGrid()) |child_grid| {
+                    if (!first) offset += self.options.gap;
+                    first = false;
+                    const x: usize, const y: usize, const length: usize = switch (self.options.direction) {
+                        .vert => .{ border_size, offset + border_size, child_grid.size.height },
+                        .horiz => .{ offset + border_size, border_size, child_grid.size.width },
+                    };
+                    child.rect = .{ .x = @intCast(x), .y = @intCast(y), .size = child_grid.size };
+                    try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, x, y);
+                    offset += length;
+                } else {
+                    // this child wasn't laid out this build (it didn't fit,
+                    // so it has no grid). drop its stale focus subtree and
+                    // scroll content so they aren't flattened upward, which
+                    // would leave phantom focusables/scrolls behind from when
+                    // it was last shown.
+                    child.widget.getFocus().clear();
+                    child.widget.getFocus().scroll = null;
 
-                            try self.getFocus().addChild(allocator, child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
-                        }
-                    }
-                },
-                .horiz => {
-                    var col: usize = 0;
-                    var first = true;
-                    for (self.children.values()) |*child| {
-                        if (child.widget.getGrid()) |child_grid| {
-                            if (!first) col += self.options.gap;
-                            first = false;
-                            child.rect = .{ .x = @as(isize, @intCast(col + border_size)), .y = @as(isize, @intCast(border_size)), .size = child_grid.size };
-                            try grid.drawGrid(child_grid, col + border_size, border_size);
-                            try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, col + border_size, border_size);
-                            col += child_grid.size.width;
-                        } else {
-                            // this child wasn't laid out this build (it didn't fit,
-                            // so it has no grid). drop its stale focus subtree so it
-                            // isn't flattened upward, which would leave phantom
-                            // focusables/scrolls behind from when it was last shown.
-                            child.widget.getFocus().clear();
-
-                            try self.getFocus().addChild(allocator, child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
-                        }
-                    }
-                },
+                    try self.getFocus().addChild(allocator, child.widget.getFocus(), .{ .width = 0, .height = 0 }, 0, 0);
+                }
             }
 
-            if (self.options.border) |border| {
-                try draw.border(&grid, border, self.options.round_corners, self.options.top_label, self.options.bottom_label);
-            }
-            if (self.options.invert) grid.invert();
+            self.pass_through = self.soleChild(width, height);
+            if (self.pass_through == null) {
+                var grid = try Grid.init(allocator, .{ .width = width, .height = height });
+                errdefer grid.deinit();
+                grid.fill(self.options.style);
 
-            // set grid
-            self.grid = grid;
+                // free each child's grid once it's drawn into ours
+                for (self.children.values()) |*child| {
+                    const rect = child.rect orelse continue;
+                    const child_grid = child.widget.getGrid() orelse continue;
+                    try grid.drawGrid(child_grid, @intCast(rect.x), @intCast(rect.y));
+                    child.widget.clearGrid();
+                }
+
+                if (self.options.border) |border| {
+                    try draw.border(&grid, border, self.options.round_corners, self.options.top_label, self.options.bottom_label);
+                }
+                if (self.options.invert) grid.invert();
+
+                self.grid = grid;
+            }
 
             // the top-level build is the only one handed its own focus node as
             // the root focus; reaching it here means the whole focusable tree has
@@ -534,14 +526,35 @@ pub fn Box(comptime Widget: type) type {
                 grid.deinit();
                 self.grid = null;
             }
+            if (self.pass_through) |key| {
+                if (self.children.getPtr(key)) |child| child.widget.clearGrid();
+                self.pass_through = null;
+            }
         }
 
         pub fn getGrid(self: Box(Widget)) ?Grid {
+            if (self.pass_through) |key| {
+                const child = self.children.get(key) orelse return null;
+                return child.widget.getGrid();
+            }
             return self.grid;
         }
 
         pub fn getFocus(self: *Box(Widget)) *Focus {
             return self.focus;
+        }
+
+        // the key of the only laid-out child, when it covers the box exactly
+        // and the box draws nothing of its own
+        fn soleChild(self: *Box(Widget), width: usize, height: usize) ?usize {
+            if (self.options.border != null or self.options.invert or !self.options.style.eql(.{})) return null;
+            var sole: ?usize = null;
+            for (self.children.keys(), self.children.values()) |key, child| {
+                const rect = child.rect orelse continue;
+                if (sole != null or rect.size.width != width or rect.size.height != height) return null;
+                sole = key;
+            }
+            return sole;
         }
 
         fn clampMax(parent_max: ?usize, child_max: ?usize) ?usize {
@@ -1454,8 +1467,7 @@ pub fn Scroll(comptime Widget: type) type {
         bar_w: usize,
         bar_h: usize,
         // the content viewport of the last build, bars excluded. unlike the grid
-        // it survives clearGrid, so scrollToRect still works while a parent
-        // rebuilds this scroll.
+        // it survives clearGrid, which a parent calls once it has drawn the grid.
         viewport: ?layout.Size = null,
 
         // subtract a scroll bar's reserved column/row from an optional size
@@ -1513,6 +1525,8 @@ pub fn Scroll(comptime Widget: type) type {
 
         pub fn build(self: *Scroll(Widget), allocator: std.mem.Allocator, constraint: layout.Constraint, root_focus: *Focus) !void {
             self.clearGrid();
+            // drop the borrowed content grid before the child can rebuild
+            self.getFocus().scroll = null;
             self.bar_w = 0;
             self.bar_h = 0;
 
@@ -1640,9 +1654,9 @@ pub fn Scroll(comptime Widget: type) type {
             try self.child.input(allocator, key, root_focus);
         }
 
+        // the content stays with the child, so a renderer can still read it
+        // after a parent frees this viewport
         pub fn clearGrid(self: *Scroll(Widget)) void {
-            // drop the borrowed content grid before the child can rebuild
-            self.getFocus().scroll = null;
             if (self.grid) |*grid| {
                 grid.deinit();
                 self.grid = null;
@@ -1685,15 +1699,11 @@ pub fn Scroll(comptime Widget: type) type {
         }
 
         // keep the scroll offsets within the content, using the last build's
-        // grids. the bar's reserved column/row isn't part of the content
-        // viewport, so exclude it (as scrollToRect does) or the last
-        // column/row stays unreachable.
+        // viewport and content
         pub fn clampToContent(self: *Scroll(Widget)) void {
-            const vp = self.grid orelse return;
+            const viewport = self.viewport orelse return;
             const content = self.child.getGrid() orelse return;
-            const view_w = vp.size.width - self.bar_w;
-            const view_h = vp.size.height - self.bar_h;
-            self.clampOffsets(content.size, view_w, view_h);
+            self.clampOffsets(content.size, viewport.width, viewport.height);
         }
 
         pub fn getFocus(self: *Scroll(Widget)) *Focus {

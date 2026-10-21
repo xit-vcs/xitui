@@ -305,15 +305,15 @@ const WidgetList = struct {
                         }
                     },
                     .page_up => {
-                        if (self.getGrid()) |grid| {
-                            const half_count = (grid.size.height / 3) / 2;
+                        if (self.scroll.viewport) |viewport| {
+                            const half_count = (viewport.height / 3) / 2;
                             index -|= half_count;
                         }
                     },
                     .page_down => {
-                        if (self.getGrid()) |grid| {
+                        if (self.scroll.viewport) |viewport| {
                             if (children.count() > 0) {
-                                const half_count = (grid.size.height / 3) / 2;
+                                const half_count = (viewport.height / 3) / 2;
                                 index = @min(index + half_count, children.count() - 1);
                             }
                         }
