@@ -68,7 +68,7 @@ pub const Grid = struct {
         }
     };
 
-    pub const Style = packed struct(u64) {
+    pub const Style = packed struct {
         // none leaves the terminal default, which is how transparency is
         // expressed: a cell with no bg lets whatever is behind it (the parent
         // widget's bg, or the terminal background) show through.
@@ -80,7 +80,6 @@ pub const Grid = struct {
         underline: bool = false,
         strikethrough: bool = false,
         inverted: bool = false,
-        _: u6 = 0,
 
         pub fn eql(self: Style, other: Style) bool {
             return self == other;
@@ -109,7 +108,7 @@ pub const Grid = struct {
         link: ?[]const u8 = null,
     };
 
-    pub const Cell = packed struct(u128) {
+    pub const Cell = packed struct {
         // 0 for an empty cell
         rune: u21 = 0,
         // this cell is the second column of a double-width rune held by the
@@ -120,12 +119,6 @@ pub const Grid = struct {
         // the url the terminal makes the cell a hyperlink to (osc 8), as one
         // plus its index in the grid's links, or 0 for none
         link: u32 = 0,
-        _: u10 = 0,
-
-        // ignores the link, which the renderer compares by hash
-        pub fn eql(self: Cell, other: Cell) bool {
-            return self.rune == other.rune and self.continuation == other.continuation and self.style == other.style;
-        }
     };
 
     pub fn init(allocator: std.mem.Allocator, size: layout.Size) !Grid {
@@ -141,17 +134,6 @@ pub const Grid = struct {
     pub fn cell(self: Grid, x: usize, y: usize) error{IndexOutOfBounds}!*Cell {
         if (x >= self.size.width or y >= self.size.height) return error.IndexOutOfBounds;
         return &self.cells[y * self.size.width + x];
-    }
-
-    pub fn clone(self: Grid, allocator: std.mem.Allocator) !Grid {
-        const cells = try allocator.dupe(Cell, self.cells);
-        errdefer allocator.free(cells);
-        return .{
-            .allocator = allocator,
-            .size = self.size,
-            .cells = cells,
-            .links = try self.links.clone(allocator),
-        };
     }
 
     pub fn initFromGrid(allocator: std.mem.Allocator, grid: Grid, size: layout.Size, grid_x: isize, grid_y: isize) !Grid {

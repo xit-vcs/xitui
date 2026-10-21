@@ -820,9 +820,10 @@ pub fn renderToWriter(
                     // an unsafe url is drawn without a link
                     const cell_link = if (grid.cellLink(cell)) |l| (if (isSafeLink(l)) l else null) else null;
                     const link_hash = if (cell_link) |l| std.hash.Wyhash.hash(0, l) | 1 else 0;
+                    // the link is compared by hash
                     var unlinked = cell;
                     unlinked.link = 0;
-                    if (!force_refresh and unlinked.eql(last_cell.*) and link_hash == last_link.*) continue;
+                    if (!force_refresh and unlinked == last_cell.* and link_hash == last_link.*) continue;
                     grid_changed = true;
                     last_cell.* = unlinked;
                     last_link.* = link_hash;
@@ -839,8 +840,9 @@ pub fn renderToWriter(
                     }
                     // off-screen cursor moves clamp to the edge
                     if (x >= size.width or y >= size.height) continue;
-                    var rune = if (cell.rune == 0) ' ' else cell.rune;
-                    // a control character would move the cursor instead of drawing
+                    var rune = cell.rune;
+                    // an empty cell draws a space, as does a control character,
+                    // which would move the cursor instead of drawing
                     if (rune < 0x20 or (rune >= 0x7f and rune < 0xa0)) rune = ' ';
                     if (wth.cellWidth(rune) > size.width - x) rune = ' ';
                     // keep unchanged frames silent
