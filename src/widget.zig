@@ -744,11 +744,11 @@ pub const TextBox = struct {
                 const run: Run = if (run_index < self.runs.items.len) self.runs.items[run_index] else .{ .end = 0, .style = .{} };
                 const cell = try grid.cell(x + border_size, y + border_size);
                 cell.style = run.style.over(self.options.style);
-                if (run.link_len != 0) cell.link = self.run_link_text.items[run.link_start..][0..run.link_len];
+                if (run.link_len != 0) cell.link = try grid.addLink(self.run_link_text.items[run.link_start..][0..run.link_len]);
                 while (link_index < self.links.items.len and self.links.items[link_index].end <= i) link_index += 1;
                 if (link_index < self.links.items.len) {
                     const link = self.links.items[link_index];
-                    if (link.start <= i) cell.link = self.link_text.items[link.text_start..][0 .. link.end - link.start];
+                    if (link.start <= i) cell.link = try grid.addLink(self.link_text.items[link.text_start..][0 .. link.end - link.start]);
                 }
                 try grid.setRune(x + border_size, y + border_size, codepoint);
                 x += rune_width;
@@ -1341,7 +1341,7 @@ pub const TextInput = struct {
                 if (cur_col < inner_width - bar) {
                     const view_row = rc.row - self.row_offset;
                     const cursor_cell = try grid.cell(border_size + cur_col, border_size + view_row);
-                    if (cursor_cell.rune == null and !cursor_cell.continuation) {
+                    if (cursor_cell.rune == 0 and !cursor_cell.continuation) {
                         try grid.setRune(border_size + cur_col, border_size + view_row, ' ');
                     }
                     cursor_cell.style.inverted = true;
@@ -1612,7 +1612,7 @@ pub fn Scroll(comptime Widget: type) type {
                     .height = content_h + reserve_h,
                 });
                 errdefer grid.deinit();
-                grid.drawGridView(child_grid, .{ .width = content_w, .height = content_h }, self.x, self.y);
+                try grid.drawGridView(child_grid, .{ .width = content_w, .height = content_h }, self.x, self.y);
                 if (reserve_w == 1) {
                     try draw.scrollBarVert(&grid, content_w, 0, content_h, child_grid.size.height, content_h, self.y);
                 }

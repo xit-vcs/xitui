@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer terminal.deinit(io);
     terminal.render_state.no_color = init.environ.containsUnemptyConstant("NO_COLOR");
     // fill the whole screen, including areas no widget covers
-    terminal.setBackground(.{ .rgb = .{ .r = 0x1e, .g = 0x22, .b = 0x2a } });
+    terminal.setBackground(.rgb(.{ .r = 0x1e, .g = 0x22, .b = 0x2a }));
 
     // set term as active so it will be properly cooked
     // when a panic/segfault happens
@@ -135,10 +135,10 @@ const WidgetList = struct {
 
         {
             var text_box = try wgt.TextBox.initSpans(allocator, &.{
-                .{ .text = "styled ", .style = .{ .fg = .{ .ansi = .red }, .bold = true } },
-                .{ .text = "text ", .style = .{ .fg = .{ .ansi = .blue }, .italic = true } },
-                .{ .text = "in a ", .style = .{ .fg = .{ .ansi = .green } } },
-                .{ .text = "TextBox", .style = .{ .fg = .{ .rgb = .{ .r = 0, .g = 0, .b = 0 } }, .bg = .{ .rgb = .{ .r = 0xe5, .g = 0xc0, .b = 0x7b } }, .underline = true } },
+                .{ .text = "styled ", .style = .{ .fg = .ansi(.red), .bold = true } },
+                .{ .text = "text ", .style = .{ .fg = .ansi(.blue), .italic = true } },
+                .{ .text = "in a ", .style = .{ .fg = .ansi(.green) } },
+                .{ .text = "TextBox", .style = .{ .fg = .rgb(.{ .r = 0, .g = 0, .b = 0 }), .bg = .rgb(.{ .r = 0xe5, .g = 0xc0, .b = 0x7b }), .underline = true } },
             }, .{ .border = .single, .wrap_kind = .word });
             errdefer text_box.deinit(allocator);
             text_box.getFocus().mode = .all;

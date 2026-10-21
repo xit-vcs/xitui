@@ -818,10 +818,10 @@ pub fn renderToWriter(
                 const last_link_row = state.last_links[row_start..][0..grid.size.width];
                 for (row, last_row, last_link_row, 0..) |cell, *last_cell, *last_link, x| {
                     // an unsafe url is drawn without a link
-                    const cell_link = if (cell.link) |l| (if (isSafeLink(l)) l else null) else null;
+                    const cell_link = if (grid.cellLink(cell)) |l| (if (isSafeLink(l)) l else null) else null;
                     const link_hash = if (cell_link) |l| std.hash.Wyhash.hash(0, l) | 1 else 0;
                     var unlinked = cell;
-                    unlinked.link = null;
+                    unlinked.link = 0;
                     if (!force_refresh and unlinked.eql(last_cell.*) and link_hash == last_link.*) continue;
                     grid_changed = true;
                     last_cell.* = unlinked;
@@ -829,17 +829,17 @@ pub fn renderToWriter(
 
                     if (cell.continuation) continue;
                     // the clear already drew blank cells, unless they carry a link
-                    if (force_refresh and cell.rune == null and cell.style.eql(.{}) and link_hash == 0) continue;
+                    if (force_refresh and cell.rune == 0 and cell.style.eql(.{}) and link_hash == 0) continue;
                     var cell_style = cell.style;
                     if (state.no_color) {
-                        cell_style.fg = null;
-                        cell_style.bg = null;
-                    } else {
-                        cell_style.bg = cell_style.bg orelse state.background;
+                        cell_style.fg = .none;
+                        cell_style.bg = .none;
+                    } else if (cell_style.bg.kind == .none) {
+                        cell_style.bg = state.background orelse .none;
                     }
                     // off-screen cursor moves clamp to the edge
                     if (x >= size.width or y >= size.height) continue;
-                    var rune = cell.rune orelse ' ';
+                    var rune = if (cell.rune == 0) ' ' else cell.rune;
                     // a control character would move the cursor instead of drawing
                     if (rune < 0x20 or (rune >= 0x7f and rune < 0xa0)) rune = ' ';
                     if (wth.cellWidth(rune) > size.width - x) rune = ' ';
@@ -893,8 +893,8 @@ pub fn writeStyle(writer: *std.Io.Writer, style: grd.Grid.Style) !void {
     if (style.underline) try writer.writeAll("\x1B[4m");
     if (style.strikethrough) try writer.writeAll("\x1B[9m");
     if (style.inverted) try writer.writeAll("\x1B[7m");
-    if (style.fg) |c| try writeColor(writer, c, false);
-    if (style.bg) |c| try writeColor(writer, c, true);
+    try writeColor(writer, style.fg, false);
+    try writeColor(writer, style.bg, true);
 }
 
 // open an osc 8 hyperlink to `url`, or close the open one when null
@@ -917,16 +917,20 @@ fn isSafeLink(url: []const u8) bool {
 }
 
 fn writeColor(writer: *std.Io.Writer, color: grd.Grid.Color, background: bool) !void {
-    switch (color) {
-        .ansi => |ansi| {
-            const n = @backingInt(ansi);
+    switch (color.kind) {
+        .none => {},
+        .ansi => {
+            const n: u8 = @intCast(color.value);
             // 30-37 / 40-47 for the normal colors, 90-97 / 100-107 for bright
             const base: u8 = if (n < 8) 30 else 90;
             const code = base + (n % 8) + @as(u8, if (background) 10 else 0);
             try writeControl(writer, "\x1B[{d}m", .{code});
         },
-        .indexed => |n| try writeControl(writer, "\x1B[{d};5;{d}m", .{ @as(u8, if (background) 48 else 38), n }),
-        .rgb => |c| try writeControl(writer, "\x1B[{d};2;{d};{d};{d}m", .{ @as(u8, if (background) 48 else 38), c.r, c.g, c.b }),
+        .indexed => try writeControl(writer, "\x1B[{d};5;{d}m", .{ @as(u8, if (background) 48 else 38), color.value }),
+        .rgb => {
+            const c = color.toRgb();
+            try writeControl(writer, "\x1B[{d};2;{d};{d};{d}m", .{ @as(u8, if (background) 48 else 38), c.r, c.g, c.b });
+        },
     }
 }
 

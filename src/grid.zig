@@ -6,14 +6,23 @@ pub const Grid = struct {
     allocator: std.mem.Allocator,
     size: layout.Size,
     cells: []Cell,
+    // the urls cells link to, borrowed like Span.link
+    links: std.ArrayList([]const u8) = .empty,
 
-    pub const Color = union(enum) {
-        // 16-color palette; follows the terminal theme
-        ansi: Ansi,
-        // 256-color palette
-        indexed: u8,
-        // truecolor
-        rgb: Rgb,
+    pub const Color = packed struct(u26) {
+        kind: Kind = .none,
+        // the ansi color or palette index, or the rgb channels
+        value: u24 = 0,
+
+        pub const Kind = enum(u2) {
+            none,
+            // 16-color palette; follows the terminal theme
+            ansi,
+            // 256-color palette
+            indexed,
+            // truecolor
+            rgb,
+        };
 
         pub const Ansi = enum(u8) {
             black,
@@ -34,41 +43,54 @@ pub const Grid = struct {
             bright_white,
         };
 
-        pub const Rgb = struct {
+        pub const Rgb = packed struct(u24) {
             r: u8,
             g: u8,
             b: u8,
         };
 
-        pub fn eql(self: Color, other: Color) bool {
-            return std.meta.eql(self, other);
+        pub const none: Color = .{};
+
+        pub fn ansi(color: Ansi) Color {
+            return .{ .kind = .ansi, .value = @backingInt(color) };
+        }
+
+        pub fn indexed(index: u8) Color {
+            return .{ .kind = .indexed, .value = index };
+        }
+
+        pub fn rgb(channels: Rgb) Color {
+            return .{ .kind = .rgb, .value = @bitCast(channels) };
+        }
+
+        pub fn toRgb(self: Color) Rgb {
+            return @bitCast(self.value);
         }
     };
 
-    pub const Style = struct {
-        // null means "leave the terminal default", which is how transparency
-        // is expressed: a cell with no bg lets whatever is behind it (the
-        // parent widget's bg, or the terminal background) show through.
-        fg: ?Color = null,
-        bg: ?Color = null,
+    pub const Style = packed struct(u64) {
+        // none leaves the terminal default, which is how transparency is
+        // expressed: a cell with no bg lets whatever is behind it (the parent
+        // widget's bg, or the terminal background) show through.
+        fg: Color = .none,
+        bg: Color = .none,
         bold: bool = false,
         dim: bool = false,
         italic: bool = false,
         underline: bool = false,
         strikethrough: bool = false,
         inverted: bool = false,
+        _: u6 = 0,
 
-        // compares every field: the renderer's frame diff relies on it, so a
-        // missed field would mean styled cells never redraw
         pub fn eql(self: Style, other: Style) bool {
-            return std.meta.eql(self, other);
+            return self == other;
         }
 
         // layer this style over `base`: set colors win, attributes accumulate
         pub fn over(self: Style, base: Style) Style {
             return .{
-                .fg = self.fg orelse base.fg,
-                .bg = self.bg orelse base.bg,
+                .fg = if (self.fg.kind == .none) base.fg else self.fg,
+                .bg = if (self.bg.kind == .none) base.bg else self.bg,
                 .bold = self.bold or base.bold,
                 .dim = self.dim or base.dim,
                 .italic = self.italic or base.italic,
@@ -87,27 +109,28 @@ pub const Grid = struct {
         link: ?[]const u8 = null,
     };
 
-    pub const Cell = struct {
-        rune: ?u21,
-        style: Style = .{},
+    pub const Cell = packed struct(u128) {
+        // 0 for an empty cell
+        rune: u21 = 0,
         // this cell is the second column of a double-width rune held by the
-        // cell to its left. rune is always null, but the column is occupied,
+        // cell to its left. rune is always 0, but the column is occupied,
         // not empty — the renderer must neither draw nor clear it.
         continuation: bool = false,
-        // a url the terminal makes the cell a hyperlink to (osc 8). it's
-        // borrowed, so it must outlive the grid.
-        link: ?[]const u8 = null,
+        style: Style = .{},
+        // the url the terminal makes the cell a hyperlink to (osc 8), as one
+        // plus its index in the grid's links, or 0 for none
+        link: u32 = 0,
+        _: u10 = 0,
 
         // ignores the link, which the renderer compares by hash
         pub fn eql(self: Cell, other: Cell) bool {
-            if (self.continuation != other.continuation) return false;
-            if (!self.style.eql(other.style)) return false;
-            return self.rune == other.rune;
+            return self.rune == other.rune and self.continuation == other.continuation and self.style == other.style;
         }
     };
+
     pub fn init(allocator: std.mem.Allocator, size: layout.Size) !Grid {
         const cells = try allocator.alloc(Cell, size.width * size.height);
-        @memset(cells, .{ .rune = null });
+        @memset(cells, .{});
         return .{
             .allocator = allocator,
             .size = size,
@@ -121,22 +144,49 @@ pub const Grid = struct {
     }
 
     pub fn clone(self: Grid, allocator: std.mem.Allocator) !Grid {
+        const cells = try allocator.dupe(Cell, self.cells);
+        errdefer allocator.free(cells);
         return .{
             .allocator = allocator,
             .size = self.size,
-            .cells = try allocator.dupe(Cell, self.cells),
+            .cells = cells,
+            .links = try self.links.clone(allocator),
         };
     }
 
     pub fn initFromGrid(allocator: std.mem.Allocator, grid: Grid, size: layout.Size, grid_x: isize, grid_y: isize) !Grid {
         var new_grid = try Grid.init(allocator, size);
-        new_grid.drawGridView(grid, size, grid_x, grid_y);
+        errdefer new_grid.deinit();
+        try new_grid.drawGridView(grid, size, grid_x, grid_y);
         return new_grid;
+    }
+
+    // the url a cell links to
+    pub fn cellLink(self: Grid, c: Cell) ?[]const u8 {
+        return if (c.link == 0) null else self.links.items[c.link - 1];
+    }
+
+    // the Cell.link for `url`. cells in a run share a link, so a repeat of
+    // the last one reuses it.
+    pub fn addLink(self: *Grid, url: []const u8) !u32 {
+        const items = self.links.items;
+        if (items.len == 0 or items[items.len - 1].ptr != url.ptr or items[items.len - 1].len != url.len) {
+            try self.links.append(self.allocator, url);
+        }
+        return @intCast(self.links.items.len);
+    }
+
+    // take `grid`'s links, returning what to add to its cells' links
+    fn appendLinks(self: *Grid, grid: Grid) !u32 {
+        const offset: u32 = @intCast(self.links.items.len);
+        try self.links.appendSlice(self.allocator, grid.links.items);
+        return offset;
     }
 
     // copy a source view into the top-left corner; the view size can
     // exclude space reserved for scroll bars
-    pub fn drawGridView(self: *Grid, grid: Grid, view_size: layout.Size, grid_x: isize, grid_y: isize) void {
+    pub fn drawGridView(self: *Grid, grid: Grid, view_size: layout.Size, grid_x: isize, grid_y: isize) !void {
+        const link_offset = try self.appendLinks(grid);
         const size: layout.Size = .{
             .width = @min(view_size.width, self.size.width),
             .height = @min(view_size.height, self.size.height),
@@ -164,6 +214,7 @@ pub const Grid = struct {
                                 }
                             } else |_| {}
                         }
+                        if (src.link != 0) src.link += link_offset;
                         self.blankPartner(dest_x, dest_y);
                         dest_cell.* = src;
                     } else |_| {
@@ -180,6 +231,7 @@ pub const Grid = struct {
 
     pub fn deinit(self: *Grid) void {
         self.allocator.free(self.cells);
+        self.links.deinit(self.allocator);
     }
 
     // set every cell's style. runes drawn afterwards with setRune keep it.
@@ -216,22 +268,21 @@ pub const Grid = struct {
         }
     }
 
-    // write `rune` (null to empty the cell) at column x, row y, keeping
+    // write `rune` (0 to empty the cell) at column x, row y, keeping
     // double-width pairs consistent: a wide rune claims (x + 1) as a
     // continuation cell, and overwriting either half of an existing pair
     // blanks the orphaned half to a space. a wide rune against the right
     // edge, with no room for its continuation, becomes a space too. the
     // cell's style is left untouched.
-    pub fn setRune(self: *Grid, x: usize, y: usize, rune: ?u21) !void {
+    pub fn setRune(self: *Grid, x: usize, y: usize, rune: u21) !void {
         const target = try self.cell(x, y);
         self.blankPartner(x, y);
         target.continuation = false;
-        const is_wide = if (rune) |cp| wth.cellWidth(cp) == 2 else false;
-        if (is_wide) {
+        if (wth.cellWidth(rune) == 2) {
             if (self.cell(x + 1, y)) |continuation| {
                 self.blankPartner(x + 1, y);
                 target.rune = rune;
-                continuation.rune = null;
+                continuation.rune = 0;
                 continuation.continuation = true;
                 continuation.style = target.style;
             } else |_| {
@@ -243,17 +294,18 @@ pub const Grid = struct {
     }
 
     pub fn drawGrid(self: *Grid, child_grid: Grid, target_x: usize, target_y: usize) !void {
+        const link_offset = try self.appendLinks(child_grid);
         for (0..child_grid.size.height) |y| {
             for (0..child_grid.size.width) |x| {
-                const src = (try child_grid.cell(x, y)).*;
+                var src = (try child_grid.cell(x, y)).*;
+                if (src.link != 0) src.link += link_offset;
                 if (self.cell(x + target_x, y + target_y)) |target| {
                     // blank the outside half of any wide pair this write
                     // splits (the inside half is overwritten by the copy)
                     self.blankPartner(x + target_x, y + target_y);
                     // a child with no bg is transparent: keep ours
-                    const bg = src.style.bg orelse target.style.bg;
+                    if (src.style.bg.kind == .none) src.style.bg = target.style.bg;
                     target.* = src;
-                    target.style.bg = bg;
                 } else |_| {
                     // clipped by our right edge: if the cell that didn't fit
                     // was a continuation, its wide lead landed in our last
@@ -283,12 +335,12 @@ pub const Grid = struct {
                 const current = (try self.cell(x, y)).*;
                 // the wide rune to the left already covers this column
                 if (current.continuation) continue;
-                if (current.rune) |rune| {
-                    var encoded: [4]u8 = undefined;
-                    const len = try std.unicode.utf8Encode(rune, &encoded);
-                    try buffer.appendSlice(allocator, encoded[0..len]);
-                } else {
+                if (current.rune == 0) {
                     try buffer.append(allocator, ' ');
+                } else {
+                    var encoded: [4]u8 = undefined;
+                    const len = try std.unicode.utf8Encode(current.rune, &encoded);
+                    try buffer.appendSlice(allocator, encoded[0..len]);
                 }
             }
             if (y + 1 < self.size.height) {
@@ -304,7 +356,7 @@ test {
     const allocator = std.testing.allocator;
     var grid = try Grid.init(allocator, .{ .width = 10, .height = 10 });
     defer grid.deinit();
-    try std.testing.expectEqual(null, (try grid.cell(0, 0)).rune);
+    try std.testing.expectEqual(0, (try grid.cell(0, 0)).rune);
 }
 
 test "setRune keeps wide pairs consistent" {
@@ -314,26 +366,26 @@ test "setRune keeps wide pairs consistent" {
 
     // a wide rune claims its continuation cell
     try grid.setRune(0, 0, '中');
-    try std.testing.expectEqual(@as(u21, '中'), grid.cells[0].rune.?);
+    try std.testing.expectEqual(@as(u21, '中'), grid.cells[0].rune);
     try std.testing.expect(grid.cells[1].continuation);
-    try std.testing.expectEqual(null, grid.cells[1].rune);
+    try std.testing.expectEqual(0, grid.cells[1].rune);
 
     // overwriting the continuation blanks the orphaned lead
     try grid.setRune(1, 0, 'x');
-    try std.testing.expectEqual(@as(u21, ' '), grid.cells[0].rune.?);
+    try std.testing.expectEqual(@as(u21, ' '), grid.cells[0].rune);
     try std.testing.expect(!grid.cells[1].continuation);
-    try std.testing.expectEqual(@as(u21, 'x'), grid.cells[1].rune.?);
+    try std.testing.expectEqual(@as(u21, 'x'), grid.cells[1].rune);
 
     // overwriting the lead blanks the orphaned continuation
     try grid.setRune(0, 0, '中');
     try grid.setRune(0, 0, 'y');
-    try std.testing.expectEqual(@as(u21, 'y'), grid.cells[0].rune.?);
+    try std.testing.expectEqual(@as(u21, 'y'), grid.cells[0].rune);
     try std.testing.expect(!grid.cells[1].continuation);
-    try std.testing.expectEqual(@as(u21, ' '), grid.cells[1].rune.?);
+    try std.testing.expectEqual(@as(u21, ' '), grid.cells[1].rune);
 
     // a wide rune against the right edge has no room for its continuation
     try grid.setRune(3, 0, '中');
-    try std.testing.expectEqual(@as(u21, ' '), grid.cells[3].rune.?);
+    try std.testing.expectEqual(@as(u21, ' '), grid.cells[3].rune);
 }
 
 test "toString skips continuation cells" {
@@ -373,11 +425,11 @@ test "initFromGrid blanks wide pairs split by the view edge" {
 }
 
 test "Style.over layers colors and accumulates attributes" {
-    const base: Grid.Style = .{ .fg = .{ .ansi = .red }, .bg = .{ .indexed = 17 }, .bold = true };
-    const top: Grid.Style = .{ .fg = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, .italic = true };
+    const base: Grid.Style = .{ .fg = .ansi(.red), .bg = .indexed(17), .bold = true };
+    const top: Grid.Style = .{ .fg = .rgb(.{ .r = 1, .g = 2, .b = 3 }), .italic = true };
     const merged = top.over(base);
-    try std.testing.expect(merged.fg.?.eql(.{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }));
-    try std.testing.expect(merged.bg.?.eql(.{ .indexed = 17 }));
+    try std.testing.expect(merged.fg == Grid.Color.rgb(.{ .r = 1, .g = 2, .b = 3 }));
+    try std.testing.expect(merged.bg == Grid.Color.indexed(17));
     try std.testing.expect(merged.bold);
     try std.testing.expect(merged.italic);
     try std.testing.expect(!merged.underline);
@@ -389,13 +441,13 @@ test "drawGrid keeps the target bg under a transparent child" {
     const allocator = std.testing.allocator;
     var parent = try Grid.init(allocator, .{ .width = 2, .height = 1 });
     defer parent.deinit();
-    parent.fill(.{ .bg = .{ .ansi = .blue } });
+    parent.fill(.{ .bg = .ansi(.blue) });
     var child = try Grid.init(allocator, .{ .width = 2, .height = 1 });
     defer child.deinit();
     try child.setRune(0, 0, 'x');
-    (try child.cell(1, 0)).style.bg = .{ .ansi = .red };
+    (try child.cell(1, 0)).style.bg = .ansi(.red);
     try parent.drawGrid(child, 0, 0);
-    try std.testing.expect(parent.cells[0].style.bg.?.eql(.{ .ansi = .blue }));
-    try std.testing.expectEqual(@as(u21, 'x'), parent.cells[0].rune.?);
-    try std.testing.expect(parent.cells[1].style.bg.?.eql(.{ .ansi = .red }));
+    try std.testing.expect(parent.cells[0].style.bg == Grid.Color.ansi(.blue));
+    try std.testing.expectEqual(@as(u21, 'x'), parent.cells[0].rune);
+    try std.testing.expect(parent.cells[1].style.bg == Grid.Color.ansi(.red));
 }

@@ -747,10 +747,10 @@ test "StreamTerminal renders a widget tree" {
 
     // attributes then colors, after the per-frame reset state
     const cases = [_]struct { style: Grid.Style, sgr: []const u8 }{
-        .{ .style = .{ .bold = true, .fg = .{ .ansi = .red } }, .sgr = "\x1B[1m\x1B[31m" },
-        .{ .style = .{ .fg = .{ .ansi = .bright_red }, .bg = .{ .ansi = .bright_blue } }, .sgr = "\x1B[91m\x1B[104m" },
-        .{ .style = .{ .bg = .{ .indexed = 17 } }, .sgr = "\x1B[48;5;17m" },
-        .{ .style = .{ .bg = .{ .rgb = .{ .r = 1, .g = 2, .b = 3 } }, .underline = true }, .sgr = "\x1B[4m\x1B[48;2;1;2;3m" },
+        .{ .style = .{ .bold = true, .fg = .ansi(.red) }, .sgr = "\x1B[1m\x1B[31m" },
+        .{ .style = .{ .fg = .ansi(.bright_red), .bg = .ansi(.bright_blue) }, .sgr = "\x1B[91m\x1B[104m" },
+        .{ .style = .{ .bg = .indexed(17) }, .sgr = "\x1B[48;5;17m" },
+        .{ .style = .{ .bg = .rgb(.{ .r = 1, .g = 2, .b = 3 }), .underline = true }, .sgr = "\x1B[4m\x1B[48;2;1;2;3m" },
     };
     for (cases) |case| {
         (try grid.cell(1, 1)).style = case.style;
@@ -769,7 +769,7 @@ test "StreamTerminal paints the terminal background" {
 
     var terminal = try StreamTerminal.init(allocator, &output.writer, .{ .width = 20, .height = 5 });
     defer terminal.deinit();
-    terminal.setBackground(.{ .indexed = 236 });
+    terminal.setBackground(.indexed(236));
 
     var widget = Widget{ .text_box = try wgt.TextBox.init(allocator, "hello", .{ .border = .single, .wrap_kind = .none }) };
     defer widget.deinit(allocator);
@@ -787,12 +787,12 @@ test "StreamTerminal paints the terminal background" {
 
     // an unchanged background and frame stay silent
     const unchanged_start = output.written().len;
-    terminal.setBackground(.{ .indexed = 236 });
+    terminal.setBackground(.indexed(236));
     try std.testing.expect(!try terminal.render(&widget));
     try std.testing.expectEqualStrings("", output.written()[unchanged_start..]);
 
     // a new background forces a full refresh
-    terminal.setBackground(.{ .rgb = .{ .r = 9, .g = 8, .b = 7 } });
+    terminal.setBackground(.rgb(.{ .r = 9, .g = 8, .b = 7 }));
     const changed_start = output.written().len;
     try std.testing.expect(try terminal.render(&widget));
     const changed = output.written()[changed_start..];
@@ -810,8 +810,8 @@ test "StreamTerminal paints the terminal background" {
 
 test "TextBox spans layer over the option style" {
     const allocator = std.testing.allocator;
-    const blue: Grid.Color = .{ .ansi = .blue };
-    const red: Grid.Color = .{ .ansi = .red };
+    const blue: Grid.Color = .ansi(.blue);
+    const red: Grid.Color = .ansi(.red);
 
     var text_box = try wgt.TextBox.initSpans(allocator, &.{
         .{ .text = "ab", .style = .{ .fg = red } },
@@ -882,7 +882,7 @@ test "Text applies its style to every cell" {
     const allocator = std.testing.allocator;
     var text = try wgt.Text.init(allocator, "a中");
     defer text.deinit(allocator);
-    text.style = .{ .dim = true, .fg = .{ .indexed = 3 } };
+    text.style = .{ .dim = true, .fg = .indexed(3) };
     try text.build(allocator, .{
         .min_size = .{ .width = null, .height = null },
         .max_size = .{ .width = 20, .height = 1 },
