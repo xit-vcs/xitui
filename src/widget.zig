@@ -1469,6 +1469,9 @@ pub fn Scroll(comptime Widget: type) type {
         // the content viewport of the last build, bars excluded. unlike the grid
         // it survives clearGrid, which a parent calls once it has drawn the grid.
         viewport: ?layout.Size = null,
+        // the content's size on the last build, which outlives the content
+        // grid the terminal path frees
+        content_size: ?layout.Size = null,
 
         // subtract a scroll bar's reserved column/row from an optional size
         // constraint, keeping at least one cell. a null (unbounded) size stays null.
@@ -1556,6 +1559,7 @@ pub fn Scroll(comptime Widget: type) type {
                     self.clampOffsets(child_grid.size, content_w, content_h);
                     self.grid = try Grid.initFromGrid(allocator, child_grid, .{ .width = content_w, .height = content_h }, 0, 0);
                     self.viewport = .{ .width = content_w, .height = content_h };
+                    self.content_size = child_grid.size;
                     self.getFocus().scroll = .{
                         .content = child_grid,
                         .offset_x = self.x,
@@ -1621,8 +1625,9 @@ pub fn Scroll(comptime Widget: type) type {
                 }
                 self.grid = grid;
                 self.viewport = .{ .width = content_w, .height = content_h };
+                self.content_size = child_grid.size;
                 self.getFocus().scroll = .{
-                    .content = child_grid,
+                    .content = null,
                     .offset_x = self.x,
                     .offset_y = self.y,
                     .direction = dir,
@@ -1647,6 +1652,9 @@ pub fn Scroll(comptime Widget: type) type {
                     else
                         .{ .x = 0, .y = 0, .size = .{ .width = 0, .height = 0 } };
                 }
+
+                // only the viewport is shown, so the content needn't stay
+                self.child.clearGrid();
             }
         }
 
@@ -1702,8 +1710,8 @@ pub fn Scroll(comptime Widget: type) type {
         // viewport and content
         pub fn clampToContent(self: *Scroll(Widget)) void {
             const viewport = self.viewport orelse return;
-            const content = self.child.getGrid() orelse return;
-            self.clampOffsets(content.size, viewport.width, viewport.height);
+            const content = self.content_size orelse return;
+            self.clampOffsets(content, viewport.width, viewport.height);
         }
 
         pub fn getFocus(self: *Scroll(Widget)) *Focus {

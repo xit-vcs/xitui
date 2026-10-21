@@ -22,7 +22,9 @@ const Child = struct {
 };
 
 pub const ScrollInfo = struct {
-    content: grid.Grid,
+    // the full content, kept only on the web path for a renderer to place in
+    // a natively scrolling element
+    content: ?grid.Grid,
     offset_x: isize,
     offset_y: isize,
     direction: widget.ScrollDirection,
