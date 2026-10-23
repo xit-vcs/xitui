@@ -989,6 +989,9 @@ pub const TextInputOptions = struct {
     // edit multiple lines: enter inserts a newline, long lines soft
     // word-wrap, and the height grows with the content
     multiline: bool = false,
+    // when false, multiline rows only break at newlines and long ones
+    // are clipped
+    wrap: bool = true,
     // content rows shown, fixed: shorter content leaves blank rows,
     // longer content scrolls (null = grow with the content, bounded
     // only by the constraint)
@@ -1114,7 +1117,7 @@ pub const TextInput = struct {
             // an overflowing space stays put as trailing whitespace
             // instead of opening a row of its own; the next word breaks
             const is_space = cp == ' ';
-            if (!is_space and col > 0 and col + w > wrap_width) {
+            if (self.options.wrap and !is_space and col > 0 and col + w > wrap_width) {
                 // break after the row's last space if it has one,
                 // otherwise char-wrap
                 const start = if (last_space) |space| space + 1 else i;
