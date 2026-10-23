@@ -968,6 +968,8 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
 
 pub const TextInputOptions = struct {
     border: ?draw.Border = .single_dashed,
+    // draw a visible border dashed, or solid when false
+    dashed: bool = true,
     round_corners: bool = false,
     // visible width in codepoints, excluding the border (null = fill
     // the available width)
@@ -1169,7 +1171,10 @@ pub const TextInput = struct {
 
         const effective_border: ?draw.Border = if (self.options.border) |base| .{ .kind = switch (base.kind) {
             .hidden => .hidden,
-            else => if (root_focus.grandchild_id == self.focus.id) .double_dashed else .single_dashed,
+            else => if (root_focus.grandchild_id == self.focus.id)
+                (if (self.options.dashed) .double_dashed else .double)
+            else
+                (if (self.options.dashed) .single_dashed else .single),
         }, .style = base.style } else null;
 
         const border_size: usize = if (effective_border) |_| 1 else 0;
