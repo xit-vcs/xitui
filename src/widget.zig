@@ -572,7 +572,8 @@ pub const WrapKind = enum {
     // break lines anywhere; one codepoint past the edge wraps to the next row
     char,
     // break lines at whitespace; a single token longer than the line falls
-    // back to char-wrapping just that token
+    // back to char-wrapping just that token. a line's indentation is kept
+    // when its first word fits beside it
     word,
 };
 
@@ -915,12 +916,11 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
         }
 
         if (codepoint == ' ' or codepoint == '\t') {
+            // leading whitespace isn't skipped: line_start stays before it
+            // until the line's first word decides whether to keep it
             if (line_width > 0 and line_width < max_width) {
                 line_end = i + 1;
                 line_width += 1;
-            } else if (line_width == 0) {
-                line_start = i + 1;
-                line_end = i + 1;
             }
             i += 1;
             continue;
@@ -935,8 +935,18 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
         }
         const word_end = i;
 
+        // a line's first word keeps the indentation before it when both
+        // fit; otherwise the indentation is dropped
+        if (line_width == 0) {
+            const indent = word_start - line_start;
+            if (indent + word_width <= max_width) {
+                line_width = indent;
+            } else {
+                line_start = word_start;
+            }
+        }
+
         if (line_width + word_width <= max_width) {
-            if (line_width == 0) line_start = word_start;
             line_end = word_end;
             line_width += word_width;
         } else if (word_width <= max_width) {
