@@ -50,35 +50,15 @@ fn setStyledRune(grid: *Grid, x: usize, y: usize, rune: u21, style: Grid.Style) 
 pub fn border(grid: *Grid, spec: Border, round_corners: bool, top_label: Grid.Span, bottom_label: Grid.Span) !void {
     const kind = spec.kind;
     const dashed = kind == .single_dashed or kind == .double_dashed;
-    const horiz_line: u21 = switch (kind) {
-        .hidden => ' ',
-        .single, .single_dashed => '─',
-        .double, .double_dashed => '═',
+    const horiz_line: u21, const vert_line: u21 = switch (kind) {
+        .hidden => .{ ' ', ' ' },
+        .single, .single_dashed => .{ '─', '│' },
+        .double, .double_dashed => .{ '═', '║' },
     };
-    const vert_line: u21 = switch (kind) {
-        .hidden => ' ',
-        .single, .single_dashed => '│',
-        .double, .double_dashed => '║',
-    };
-    const top_left: u21 = switch (kind) {
-        .hidden => ' ',
-        .single, .single_dashed => if (round_corners) '╭' else '┌',
-        .double, .double_dashed => if (round_corners) '╭' else '╔',
-    };
-    const top_right: u21 = switch (kind) {
-        .hidden => ' ',
-        .single, .single_dashed => if (round_corners) '╮' else '┐',
-        .double, .double_dashed => if (round_corners) '╮' else '╗',
-    };
-    const bottom_left: u21 = switch (kind) {
-        .hidden => ' ',
-        .single, .single_dashed => if (round_corners) '╰' else '└',
-        .double, .double_dashed => if (round_corners) '╰' else '╚',
-    };
-    const bottom_right: u21 = switch (kind) {
-        .hidden => ' ',
-        .single, .single_dashed => if (round_corners) '╯' else '┘',
-        .double, .double_dashed => if (round_corners) '╯' else '╝',
+    const top_left: u21, const top_right: u21, const bottom_left: u21, const bottom_right: u21 = switch (kind) {
+        .hidden => .{ ' ', ' ', ' ', ' ' },
+        .single, .single_dashed => if (round_corners) .{ '╭', '╮', '╰', '╯' } else .{ '┌', '┐', '└', '┘' },
+        .double, .double_dashed => if (round_corners) .{ '╭', '╮', '╰', '╯' } else .{ '╔', '╗', '╚', '╝' },
     };
     // the labels go first, so the line's style doesn't reach their cells
     const top_end = try label(grid, 0, top_label);
