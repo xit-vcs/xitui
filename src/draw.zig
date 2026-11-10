@@ -83,6 +83,8 @@ pub fn border(grid: *Grid, spec: Border, round_corners: bool, top_label: Grid.Sp
     // the labels go first, so the line's style doesn't reach their cells
     const top_end = try label(grid, 0, top_label);
     const bottom_end = try label(grid, grid.size.height - 1, bottom_label);
+    // a hidden border with no style of its own has nothing left to draw
+    if (kind == .hidden and spec.style.eql(.{})) return;
     for (1..grid.size.width - 1) |x| {
         if (dashed and x % 2 == 1) continue;
         if (x >= top_end) try setStyledRune(grid, x, 0, horiz_line, spec.style);
