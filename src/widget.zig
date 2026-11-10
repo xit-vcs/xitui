@@ -44,7 +44,7 @@ pub const Text = struct {
         const content_width = try wth.displayWidth(self.content);
         var grid = try Grid.init(allocator, .{ .width = @max(1, @min(content_width, constraint.max_size.width orelse content_width)), .height = 1 });
         errdefer grid.deinit();
-        grid.fill(self.style);
+        if (!self.style.eql(.{})) grid.fill(self.style);
         var utf8 = (try std.unicode.Utf8View.init(self.content)).iterator();
         var i: usize = 0;
         while (utf8.nextCodepoint()) |char| {
@@ -489,7 +489,7 @@ pub fn Box(comptime Widget: type) type {
             if (self.pass_through == null) {
                 var grid = try Grid.init(allocator, .{ .width = width, .height = height });
                 errdefer grid.deinit();
-                grid.fill(self.options.style);
+                if (!self.options.style.eql(.{})) grid.fill(self.options.style);
 
                 // free each child's grid once it's drawn into ours
                 for (self.children.values()) |*child| {
@@ -730,7 +730,7 @@ pub const TextBox = struct {
 
         var grid = try Grid.init(allocator, .{ .width = width, .height = height });
         errdefer grid.deinit();
-        grid.fill(self.options.style);
+        if (!self.options.style.eql(.{})) grid.fill(self.options.style);
 
         // lines are visited in content order, so cursors walk the runs and links
         var run_index: usize = 0;
@@ -1255,7 +1255,7 @@ pub const TextInput = struct {
 
         var grid = try Grid.init(allocator, .{ .width = width, .height = height });
         errdefer grid.deinit();
-        grid.fill(self.options.style);
+        if (!self.options.style.eql(.{})) grid.fill(self.options.style);
 
         const has_focus = root_focus.grandchild_id == self.focus.id;
 
@@ -1347,7 +1347,7 @@ pub const TextInput = struct {
 
         var grid = try Grid.init(allocator, .{ .width = width, .height = vp_h + border_size * 2 });
         errdefer grid.deinit();
-        grid.fill(self.options.style);
+        if (!self.options.style.eql(.{})) grid.fill(self.options.style);
 
         const has_focus = root_focus.grandchild_id == self.focus.id;
 
