@@ -1226,6 +1226,21 @@ pub const TextInput = struct {
             }
         }
 
+        // deleting text can leave the window part empty while more text is
+        // hidden to its left. pull the window back while the text after it,
+        // plus the column the cursor takes past the end, still fits
+        var tail_columns: usize = 1;
+        var tail_index = self.scroll_offset;
+        while (tail_index < self.content.items.len and tail_columns <= inner_width) : (tail_index += 1) {
+            tail_columns += self.contentCellWidth(tail_index);
+        }
+        while (self.scroll_offset > 0) {
+            const w = self.contentCellWidth(self.scroll_offset - 1);
+            if (tail_columns + w > inner_width) break;
+            tail_columns += w;
+            self.scroll_offset -= 1;
+        }
+
         var grid = try Grid.init(allocator, .{ .width = width, .height = height });
         errdefer grid.deinit();
         grid.fill(self.options.style);
