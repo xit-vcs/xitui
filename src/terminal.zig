@@ -416,6 +416,21 @@ pub const Core = switch (builtin.target.os.tag) {
             // idle, so the read loop can check quit/resize
             self.raw.cc[@backingInt(std.posix.V.TIME)] = 1;
             self.raw.cc[@backingInt(std.posix.V.MIN)] = 0;
+            // ISIG stays on so ctrl+c still raises SIGINT, but ctrl+z and
+            // ctrl+\ are turned off so they arrive as keys instead: a
+            // stopped or core-dumped app leaves the terminal uncooked, and
+            // a resumed one comes back to a tty the shell has cooked
+            const disabled: std.posix.cc_t = switch (builtin.target.os.tag) {
+                .linux => 0,
+                // _POSIX_VDISABLE on macos and the bsds
+                else => 0xff,
+            };
+            self.raw.cc[@backingInt(std.posix.V.SUSP)] = disabled;
+            self.raw.cc[@backingInt(std.posix.V.QUIT)] = disabled;
+            // macos and the bsds also stop on ctrl+y (delayed suspend)
+            if (@hasField(std.posix.V, "DSUSP")) {
+                self.raw.cc[@backingInt(std.posix.V.DSUSP)] = disabled;
+            }
             try std.posix.tcsetattr(self.tty.handle, .FLUSH, self.raw);
 
             try hideCursor(&self.writer.interface);
@@ -561,6 +576,12 @@ pub const Terminal = struct {
                 }, null);
                 // the tty hung up
                 std.posix.sigaction(std.posix.SIG.HUP, &.{
+                    .handler = .{ .handler = handler },
+                    .mask = std.posix.sigemptyset(),
+                    .flags = 0,
+                }, null);
+                // a plain `kill` asks us to exit, so leave the same way
+                std.posix.sigaction(std.posix.SIG.TERM, &.{
                     .handler = .{ .handler = handler },
                     .mask = std.posix.sigemptyset(),
                     .flags = 0,
