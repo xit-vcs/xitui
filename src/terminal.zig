@@ -395,6 +395,37 @@ pub const Core = switch (builtin.target.os.tag) {
         raw: std.posix.termios,
         parser: EscapeParser,
         input_deadline: InputDeadline = .{},
+        // what handled each of `signals` before init, put back by deinit
+        old_actions: [signals.len]std.posix.Sigaction = undefined,
+
+        // ctrl+c, the tty hanging up, and a plain `kill` all ask us to
+        // quit; a window size change is reported as a resize
+        const signals = [_]std.posix.SIG{ .INT, .HUP, .TERM, .WINCH };
+
+        fn onQuit(_: std.posix.SIG) callconv(.c) void {
+            quit.store(true, .monotonic);
+        }
+
+        fn onResize(_: std.posix.SIG) callconv(.c) void {
+            resized.store(true, .monotonic);
+        }
+
+        fn handleSignals(self: *Core) void {
+            for (signals, &self.old_actions) |sig, *old_action| {
+                std.posix.sigaction(sig, &.{
+                    .handler = .{ .handler = if (sig == .WINCH) onResize else onQuit },
+                    .mask = std.posix.sigemptyset(),
+                    .flags = 0,
+                }, old_action);
+            }
+        }
+
+        // hand the signals back, so ctrl+c stops the process again
+        fn restoreSignals(self: *Core) void {
+            for (signals, &self.old_actions) |sig, *old_action| {
+                std.posix.sigaction(sig, old_action, null);
+            }
+        }
 
         fn uncook(self: *Core) !void {
             self.cooked_termios = try std.posix.tcgetattr(self.tty.handle);
@@ -564,39 +595,11 @@ pub const Terminal = struct {
                 try self.core.uncook();
                 errdefer self.core.cook() catch {};
 
-                const handler = struct {
-                    fn run(_: std.posix.SIG) callconv(.c) void {
-                        quit.store(true, .monotonic);
-                    }
-                }.run;
-                std.posix.sigaction(std.posix.SIG.INT, &.{
-                    .handler = .{ .handler = handler },
-                    .mask = std.posix.sigemptyset(),
-                    .flags = 0,
-                }, null);
-                // the tty hung up
-                std.posix.sigaction(std.posix.SIG.HUP, &.{
-                    .handler = .{ .handler = handler },
-                    .mask = std.posix.sigemptyset(),
-                    .flags = 0,
-                }, null);
-                // a plain `kill` asks us to exit, so leave the same way
-                std.posix.sigaction(std.posix.SIG.TERM, &.{
-                    .handler = .{ .handler = handler },
-                    .mask = std.posix.sigemptyset(),
-                    .flags = 0,
-                }, null);
-
-                const resize_handler = struct {
-                    fn run(_: std.posix.SIG) callconv(.c) void {
-                        resized.store(true, .monotonic);
-                    }
-                }.run;
-                std.posix.sigaction(std.posix.SIG.WINCH, &.{
-                    .handler = .{ .handler = resize_handler },
-                    .mask = std.posix.sigemptyset(),
-                    .flags = 0,
-                }, null);
+                // a terminal that quit earlier in this process mustn't make
+                // this one start out quitting
+                quit.store(false, .monotonic);
+                self.core.handleSignals();
+                errdefer self.core.restoreSignals();
 
                 self.size = try self.getSize();
 
@@ -616,6 +619,7 @@ pub const Terminal = struct {
             },
             else => {
                 self.core.cook() catch {};
+                self.core.restoreSignals();
                 self.core.parser.deinit();
                 self.core.allocator.free(self.core.write_buffer);
                 self.core.tty.close(io);
