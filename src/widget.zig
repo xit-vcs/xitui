@@ -1710,34 +1710,21 @@ pub fn Scroll(comptime Widget: type) type {
             return self.grid;
         }
 
+        // the offset that shows [start, start + length) in a viewport of
+        // `view` cells: the span's start when that lies before the offset,
+        // otherwise just far enough along to reach its end
+        fn offsetToShow(offset: isize, start: isize, length: usize, view: usize) isize {
+            if (start < offset) return start;
+            return @max(offset, start + @as(isize, @intCast(length)) - @as(isize, @intCast(view)));
+        }
+
         pub fn scrollToRect(self: *Scroll(Widget), rect: layout.IRect) void {
-            if (self.viewport) |viewport| {
-                const content_width = viewport.width;
-                const content_height = viewport.height;
-                if (self.options.direction == .horiz or self.options.direction == .both) {
-                    if (rect.x < self.x) {
-                        self.x -= self.x - rect.x;
-                    } else {
-                        const rect_x = rect.x + @as(isize, @intCast(rect.size.width));
-                        const self_x = self.x + @as(isize, @intCast(content_width));
-                        self.x += if (rect_x > self_x)
-                            rect_x - self_x
-                        else
-                            0;
-                    }
-                }
-                if (self.options.direction == .vert or self.options.direction == .both) {
-                    if (rect.y < self.y) {
-                        self.y -= self.y - rect.y;
-                    } else {
-                        const rect_y = rect.y + @as(isize, @intCast(rect.size.height));
-                        const self_y = self.y + @as(isize, @intCast(content_height));
-                        self.y += if (rect_y > self_y)
-                            rect_y - self_y
-                        else
-                            0;
-                    }
-                }
+            const viewport = self.viewport orelse return;
+            if (self.options.direction == .horiz or self.options.direction == .both) {
+                self.x = offsetToShow(self.x, rect.x, rect.size.width, viewport.width);
+            }
+            if (self.options.direction == .vert or self.options.direction == .both) {
+                self.y = offsetToShow(self.y, rect.y, rect.size.height, viewport.height);
             }
         }
 
