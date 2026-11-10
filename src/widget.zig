@@ -1782,6 +1782,9 @@ pub fn Stack(comptime Widget: type) type {
                     try self.getFocus().addChild(allocator, selected_widget.getFocus(), child_grid.size, 0, 0);
                 }
             }
+            // as the root, recover focus the way a Box does when this build
+            // dropped the widget that held it
+            if (root_focus == self.getFocus()) root_focus.refocus();
         }
 
         pub fn input(self: *Stack(Widget), allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
@@ -1790,9 +1793,11 @@ pub fn Stack(comptime Widget: type) type {
             }
         }
 
+        // every child's grid, not only the selected one's: the selection
+        // may have moved since the last build, leaving the old child's behind
         pub fn clearGrid(self: *Stack(Widget)) void {
-            if (self.getSelected()) |selected_widget| {
-                selected_widget.clearGrid();
+            for (self.children.values()) |*child| {
+                child.clearGrid();
             }
         }
 
