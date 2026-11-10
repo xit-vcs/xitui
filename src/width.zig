@@ -20,8 +20,10 @@ const wide_ranges = [_]Range{
     .{ .first = 0x23F3, .last = 0x23F3 },
     .{ .first = 0x25FD, .last = 0x25FE },
     .{ .first = 0x2614, .last = 0x2615 },
+    .{ .first = 0x2630, .last = 0x2637 },
     .{ .first = 0x2648, .last = 0x2653 },
     .{ .first = 0x267F, .last = 0x267F },
+    .{ .first = 0x268A, .last = 0x268F },
     .{ .first = 0x2693, .last = 0x2693 },
     .{ .first = 0x26A1, .last = 0x26A1 },
     .{ .first = 0x26AA, .last = 0x26AB },
@@ -50,17 +52,15 @@ const wide_ranges = [_]Range{
     .{ .first = 0x2E80, .last = 0x2E99 }, // cjk radicals
     .{ .first = 0x2E9B, .last = 0x2EF3 },
     .{ .first = 0x2F00, .last = 0x2FD5 }, // kangxi radicals
-    .{ .first = 0x2FF0, .last = 0x2FFB }, // ideographic description
-    .{ .first = 0x3000, .last = 0x303E }, // cjk symbols and punctuation
+    .{ .first = 0x2FF0, .last = 0x303E }, // ideographic description, cjk symbols and punctuation
     .{ .first = 0x3041, .last = 0x3096 }, // hiragana
     .{ .first = 0x3099, .last = 0x30FF }, // katakana
     .{ .first = 0x3105, .last = 0x312F }, // bopomofo
     .{ .first = 0x3131, .last = 0x318E }, // hangul compatibility jamo
-    .{ .first = 0x3190, .last = 0x31E3 },
-    .{ .first = 0x31F0, .last = 0x321E },
+    .{ .first = 0x3190, .last = 0x31E5 },
+    .{ .first = 0x31EF, .last = 0x321E },
     .{ .first = 0x3220, .last = 0x3247 },
-    .{ .first = 0x3250, .last = 0x4DBF }, // incl. cjk extension A
-    .{ .first = 0x4E00, .last = 0xA48C }, // cjk unified ideographs, yi
+    .{ .first = 0x3250, .last = 0xA48C }, // incl. cjk extension A, yijing hexagrams, cjk unified ideographs, yi
     .{ .first = 0xA490, .last = 0xA4C6 },
     .{ .first = 0xA960, .last = 0xA97C }, // hangul jamo extended-A
     .{ .first = 0xAC00, .last = 0xD7A3 }, // hangul syllables
@@ -75,7 +75,7 @@ const wide_ranges = [_]Range{
     .{ .first = 0x16FF0, .last = 0x16FF1 },
     .{ .first = 0x17000, .last = 0x187F7 }, // tangut
     .{ .first = 0x18800, .last = 0x18CD5 },
-    .{ .first = 0x18D00, .last = 0x18D08 },
+    .{ .first = 0x18CFF, .last = 0x18D08 },
     .{ .first = 0x1AFF0, .last = 0x1AFF3 },
     .{ .first = 0x1AFF5, .last = 0x1AFFB },
     .{ .first = 0x1AFFD, .last = 0x1AFFE },
@@ -85,6 +85,8 @@ const wide_ranges = [_]Range{
     .{ .first = 0x1B155, .last = 0x1B155 },
     .{ .first = 0x1B164, .last = 0x1B167 },
     .{ .first = 0x1B170, .last = 0x1B2FB }, // nushu
+    .{ .first = 0x1D300, .last = 0x1D356 }, // tai xuan jing symbols
+    .{ .first = 0x1D360, .last = 0x1D376 }, // counting rod numerals
     .{ .first = 0x1F004, .last = 0x1F004 },
     .{ .first = 0x1F0CF, .last = 0x1F0CF },
     .{ .first = 0x1F18E, .last = 0x1F18E },
@@ -125,11 +127,10 @@ const wide_ranges = [_]Range{
     .{ .first = 0x1F93C, .last = 0x1F945 },
     .{ .first = 0x1F947, .last = 0x1F9FF },
     .{ .first = 0x1FA70, .last = 0x1FA7C },
-    .{ .first = 0x1FA80, .last = 0x1FA88 },
-    .{ .first = 0x1FA90, .last = 0x1FABD },
-    .{ .first = 0x1FABF, .last = 0x1FAC5 },
-    .{ .first = 0x1FACE, .last = 0x1FADB },
-    .{ .first = 0x1FAE0, .last = 0x1FAE8 },
+    .{ .first = 0x1FA80, .last = 0x1FA89 },
+    .{ .first = 0x1FA8F, .last = 0x1FAC6 },
+    .{ .first = 0x1FACE, .last = 0x1FADC },
+    .{ .first = 0x1FADF, .last = 0x1FAE9 },
     .{ .first = 0x1FAF0, .last = 0x1FAF8 },
     .{ .first = 0x20000, .last = 0x2FFFD }, // cjk extension B and beyond
     .{ .first = 0x30000, .last = 0x3FFFD },
