@@ -1025,10 +1025,19 @@ fn parseSgrMouse(buffer: []const u8) ?inp.Key {
     const y: usize = if (cy > 0) cy - 1 else 0;
     const ctrl = cb & 0x10 != 0;
 
-    // bit 6 (0x40) flags a scroll event; lower bit is direction
+    // bit 7 (0x80) marks the extra buttons (8 and up, like back and
+    // forward), which aren't left, middle, or right presses
+    if (cb & 0x80 != 0) return null;
+
+    // bit 6 (0x40) flags a wheel event; the low bits give its direction
     if (cb & 0x40 != 0) {
         const position: inp.Position = .{ .x = x, .y = y };
-        return if (cb & 0x01 == 0) .{ .scroll_up = position } else .{ .scroll_down = position };
+        return switch (cb & 0x03) {
+            0 => .{ .scroll_up = position },
+            1 => .{ .scroll_down = position },
+            // a sideways tick (wheel left or right) isn't a vertical scroll
+            else => null,
+        };
     }
 
     const button: inp.MouseButton = switch (cb & 0x03) {
