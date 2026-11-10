@@ -295,7 +295,7 @@ pub fn Box(comptime Widget: type) type {
                 var child = &self.children.values()[layout_child.index];
                 child.rect = null;
                 child.widget.clearGrid();
-                const gap: usize = if (placed > 0) self.options.gap else 0;
+                var gap: usize = if (placed > 0) self.options.gap else 0;
 
                 // a hidden child takes no space: leave its grid cleared so the
                 // placement loop routes it through the no-grid branch.
@@ -424,7 +424,11 @@ pub fn Box(comptime Widget: type) type {
                 }, root_focus);
 
                 if (child.widget.getGrid()) |child_grid| {
-                    placed += 1;
+                    // a child with no length along the main axis (like an
+                    // empty box) takes no gap, or its neighbors would end
+                    // up two gaps apart
+                    const length = if (self.options.direction == .vert) child_grid.size.height else child_grid.size.width;
+                    if (length > 0) placed += 1 else gap = 0;
                     switch (self.options.direction) {
                         .vert => {
                             if (remaining_height_maybe) |*remaining_height| remaining_height.* -|= gap + child_grid.size.height;
@@ -458,18 +462,16 @@ pub fn Box(comptime Widget: type) type {
 
             // place each laid-out child after the last along the main axis
             var offset: usize = 0;
-            var first = true;
             for (self.children.values()) |*child| {
                 if (child.widget.getGrid()) |child_grid| {
-                    if (!first) offset += self.options.gap;
-                    first = false;
                     const x: usize, const y: usize, const length: usize = switch (self.options.direction) {
                         .vert => .{ border_size, offset + border_size, child_grid.size.height },
                         .horiz => .{ offset + border_size, border_size, child_grid.size.width },
                     };
                     child.rect = .{ .x = @intCast(x), .y = @intCast(y), .size = child_grid.size };
                     try self.getFocus().addChild(allocator, child.widget.getFocus(), child_grid.size, x, y);
-                    offset += length;
+                    // a gap follows each child that has some length
+                    offset += if (length > 0) length + self.options.gap else 0;
                 } else {
                     // this child wasn't laid out this build (it didn't fit,
                     // so it has no grid). drop its stale focus subtree and
