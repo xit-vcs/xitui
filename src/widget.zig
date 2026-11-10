@@ -1396,8 +1396,31 @@ pub const TextInput = struct {
         self.grid = grid;
     }
 
+    // move the cursor to the cell a left click landed on. the root focus
+    // knows where the last build put the input on screen.
+    fn click(self: *TextInput, allocator: std.mem.Allocator, mouse: inp.Mouse, root_focus: *Focus) !void {
+        if (mouse.button != .left or !self.options.render_content) return;
+        const r = (root_focus.children.get(self.focus.id) orelse return).rect;
+        if (mouse.x < r.x or mouse.y < r.y or mouse.x >= r.x + r.size.width or mouse.y >= r.y + r.size.height) return;
+        // the clicked row's first index and the last the cursor can take.
+        // a click on the border counts as one on the nearest cell.
+        const border_size: usize = if (self.options.border != null) 1 else 0;
+        var col = (mouse.x - r.x) -| border_size;
+        var start = self.scroll_offset;
+        var max = self.content.items.len;
+        if (self.options.multiline) {
+            try self.computeRowStarts(allocator, self.last_wrap_width orelse return);
+            const row = @min(self.row_offset + ((mouse.y - r.y) -| border_size), self.row_starts.items.len - 1);
+            start = self.row_starts.items[row];
+            max = self.rowMaxIndex(row);
+        }
+        self.cursor = start;
+        while (self.cursor < max and col >= self.contentCellWidth(self.cursor)) : (self.cursor += 1) {
+            col -= self.contentCellWidth(self.cursor);
+        }
+    }
+
     pub fn input(self: *TextInput, allocator: std.mem.Allocator, key: inp.Key, root_focus: *Focus) !void {
-        _ = root_focus;
         if (self.options.read_only) switch (key) {
             .enter, .delete, .backspace, .codepoint => return,
             else => {},
@@ -1449,6 +1472,7 @@ pub const TextInput = struct {
                 try self.content.insert(allocator, self.cursor, cp);
                 self.cursor += 1;
             },
+            .mouse => |mouse| try self.click(allocator, mouse, root_focus),
             else => {},
         }
     }

@@ -71,9 +71,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     if (mouse.button == .left) {
                         const root_focus = root.getFocus();
                         if (root_focus.hitTest(mouse.x, mouse.y)) |hit| root_focus.setFocus(hit.id);
-                    } else {
-                        try root.input(allocator, key, root.getFocus());
                     }
+                    // a text input moves its cursor to a left click
+                    try root.input(allocator, key, root.getFocus());
                 },
                 else => try root.input(allocator, key, root.getFocus()),
             }
@@ -242,7 +242,7 @@ const WidgetList = struct {
                 const focused = &children.values()[current_index].widget;
                 if (focused.* == .text_input) {
                     switch (key) {
-                        .codepoint, .arrow_left, .arrow_right, .home, .end, .delete, .backspace => {
+                        .codepoint, .arrow_left, .arrow_right, .home, .end, .delete, .backspace, .mouse => {
                             try focused.input(allocator, key, root_focus);
                             return;
                         },
