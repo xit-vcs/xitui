@@ -1353,47 +1353,21 @@ pub const EscapeParser = struct {
                     'm' => .unknown,
                     '~' => blk: {
                         var codes = std.mem.splitSequence(u8, self.esc_buffer[2..self.esc_len], ";");
-                        const code = codes.first();
-                        break :blk if (std.mem.eql(u8, code, "1"))
-                            .home
-                        else if (std.mem.eql(u8, code, "2"))
-                            .insert
-                        else if (std.mem.eql(u8, code, "3"))
-                            .delete
-                        else if (std.mem.eql(u8, code, "4"))
-                            .end
-                        else if (std.mem.eql(u8, code, "5"))
-                            .page_up
-                        else if (std.mem.eql(u8, code, "6"))
-                            .page_down
+                        const code = std.fmt.parseInt(u8, codes.first(), 10) catch break :blk .unknown;
+                        break :blk switch (code) {
+                            1 => .home,
+                            2 => .insert,
+                            3 => .delete,
+                            4 => .end,
+                            5 => .page_up,
+                            6 => .page_down,
                             // F1–F12 — the historical code sequence
                             // has gaps at 16 and 22
-                        else if (std.mem.eql(u8, code, "11"))
-                            inp.Key{ .f = 1 }
-                        else if (std.mem.eql(u8, code, "12"))
-                            inp.Key{ .f = 2 }
-                        else if (std.mem.eql(u8, code, "13"))
-                            inp.Key{ .f = 3 }
-                        else if (std.mem.eql(u8, code, "14"))
-                            inp.Key{ .f = 4 }
-                        else if (std.mem.eql(u8, code, "15"))
-                            inp.Key{ .f = 5 }
-                        else if (std.mem.eql(u8, code, "17"))
-                            inp.Key{ .f = 6 }
-                        else if (std.mem.eql(u8, code, "18"))
-                            inp.Key{ .f = 7 }
-                        else if (std.mem.eql(u8, code, "19"))
-                            inp.Key{ .f = 8 }
-                        else if (std.mem.eql(u8, code, "20"))
-                            inp.Key{ .f = 9 }
-                        else if (std.mem.eql(u8, code, "21"))
-                            inp.Key{ .f = 10 }
-                        else if (std.mem.eql(u8, code, "23"))
-                            inp.Key{ .f = 11 }
-                        else if (std.mem.eql(u8, code, "24"))
-                            inp.Key{ .f = 12 }
-                        else
-                            .unknown;
+                            11...15 => .{ .f = @intCast(code - 10) },
+                            17...21 => .{ .f = @intCast(code - 11) },
+                            23, 24 => .{ .f = @intCast(code - 12) },
+                            else => .unknown,
+                        };
                     },
                     else => .unknown,
                 };
