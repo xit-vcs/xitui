@@ -165,50 +165,46 @@ pub const Grid = struct {
         return offset;
     }
 
+    // copy a `size` area of `src` that starts at (src_x, src_y) to
+    // (dst_x, dst_y), clipped to both grids. a cell with no bg is
+    // transparent: it keeps ours. a wide pair cut by an end of a copied
+    // row leaves a blank column, since half a glyph can't be drawn.
+    fn copyArea(self: *Grid, dst_x: usize, dst_y: usize, src: Grid, src_x: usize, src_y: usize, size: layout.Size) !void {
+        const link_offset = try self.appendLinks(src);
+        const width = @min(size.width, self.size.width -| dst_x, src.size.width -| src_x);
+        const height = @min(size.height, self.size.height -| dst_y, src.size.height -| src_y);
+        if (width == 0) return;
+        for (0..height) |row| {
+            const src_row = src.cells[(src_y + row) * src.size.width ..][0..src.size.width];
+            const dst_row = self.cells[(dst_y + row) * self.size.width + dst_x ..][0..width];
+            // our own pairs that the row's ends cut. the halves inside
+            // the row are overwritten.
+            self.blankPartner(dst_x, dst_y + row);
+            self.blankPartner(dst_x + width - 1, dst_y + row);
+            for (src_row[src_x..][0..width], dst_row) |src_cell, *dst| {
+                var copy = src_cell;
+                if (copy.link != 0) copy.link += link_offset;
+                if (copy.style.bg.kind == .none) copy.style.bg = dst.style.bg;
+                dst.* = copy;
+            }
+            // the source's pairs that the row's ends cut
+            if (dst_row[0].continuation) dst_row[0] = .{ .rune = ' ', .style = dst_row[0].style };
+            if (src_x + width < src.size.width and src_row[src_x + width].continuation) {
+                dst_row[width - 1] = .{ .rune = ' ', .style = dst_row[width - 1].style };
+            }
+        }
+    }
+
     // copy a source view into the top-left corner; the view size can
     // exclude space reserved for scroll bars
     pub fn drawGridView(self: *Grid, grid: Grid, view_size: layout.Size, grid_x: isize, grid_y: isize) !void {
-        const link_offset = try self.appendLinks(grid);
-        const size: layout.Size = .{
-            .width = @min(view_size.width, self.size.width),
-            .height = @min(view_size.height, self.size.height),
-        };
-        const ugrid_x: usize = if (grid_x < 0) 0 else @intCast(grid_x);
-        const ugrid_y: usize = if (grid_y < 0) 0 else @intCast(grid_y);
-        var dest_y: usize = if (grid_y < 0) @abs(grid_y) else 0;
-        for (ugrid_y..ugrid_y + size.height) |source_y| {
-            if (dest_y >= size.height) break;
-            var dest_x: usize = if (grid_x < 0) @abs(grid_x) else 0;
-            for (ugrid_x..ugrid_x + size.width) |source_x| {
-                if (dest_x >= size.width) break;
-                if (self.cell(dest_x, dest_y)) |dest_cell| {
-                    if (grid.cell(source_x, source_y)) |source_cell| {
-                        var src = source_cell.*;
-                        // a wide pair split by the view's left or right edge
-                        // renders as a blank column — half a glyph can't be
-                        // drawn
-                        if (src.continuation and source_x == ugrid_x) {
-                            src = .{ .rune = ' ', .style = src.style };
-                        } else if (dest_x + 1 == size.width) {
-                            if (grid.cell(source_x + 1, source_y)) |next_cell| {
-                                if (next_cell.continuation) {
-                                    src = .{ .rune = ' ', .style = src.style };
-                                }
-                            } else |_| {}
-                        }
-                        if (src.link != 0) src.link += link_offset;
-                        self.blankPartner(dest_x, dest_y);
-                        dest_cell.* = src;
-                    } else |_| {
-                        break;
-                    }
-                } else |_| {
-                    break;
-                }
-                dest_x += 1;
-            }
-            dest_y += 1;
-        }
+        // a negative offset starts the source that far into the view
+        const dst_x: usize = if (grid_x < 0) @abs(grid_x) else 0;
+        const dst_y: usize = if (grid_y < 0) @abs(grid_y) else 0;
+        try self.copyArea(dst_x, dst_y, grid, if (grid_x < 0) 0 else @intCast(grid_x), if (grid_y < 0) 0 else @intCast(grid_y), .{
+            .width = view_size.width -| dst_x,
+            .height = view_size.height -| dst_y,
+        });
     }
 
     pub fn deinit(self: *Grid) void {
@@ -267,6 +263,7 @@ pub const Grid = struct {
                 continuation.rune = 0;
                 continuation.continuation = true;
                 continuation.style = target.style;
+                continuation.link = target.link;
             } else |_| {
                 target.rune = ' ';
             }
@@ -276,32 +273,7 @@ pub const Grid = struct {
     }
 
     pub fn drawGrid(self: *Grid, child_grid: Grid, target_x: usize, target_y: usize) !void {
-        const link_offset = try self.appendLinks(child_grid);
-        for (0..child_grid.size.height) |y| {
-            for (0..child_grid.size.width) |x| {
-                var src = (try child_grid.cell(x, y)).*;
-                if (src.link != 0) src.link += link_offset;
-                if (self.cell(x + target_x, y + target_y)) |target| {
-                    // blank the outside half of any wide pair this write
-                    // splits (the inside half is overwritten by the copy)
-                    self.blankPartner(x + target_x, y + target_y);
-                    // a child with no bg is transparent: keep ours
-                    if (src.style.bg.kind == .none) src.style.bg = target.style.bg;
-                    target.* = src;
-                } else |_| {
-                    // clipped by our right edge: if the cell that didn't fit
-                    // was a continuation, its wide lead landed in our last
-                    // column as half a glyph — blank it
-                    if (src.continuation and x > 0) {
-                        if (self.cell(x + target_x - 1, y + target_y)) |lead| {
-                            lead.rune = ' ';
-                            lead.continuation = false;
-                        } else |_| {}
-                    }
-                    break;
-                }
-            }
-        }
+        try self.copyArea(target_x, target_y, child_grid, 0, 0, child_grid.size);
     }
 
     pub fn toString(self: Grid, allocator: std.mem.Allocator) ![]const u8 {

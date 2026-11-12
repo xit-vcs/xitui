@@ -220,18 +220,6 @@ pub fn displayWidth(s: []const u8) !usize {
     return total;
 }
 
-// total columns the string occupies, summing runeWidth over its codepoints.
-// zero-width codepoints genuinely count 0 here; widgets that give every
-// codepoint its own cell should use displayWidth instead.
-pub fn strWidth(s: []const u8) !usize {
-    var iter = (try std.unicode.Utf8View.init(s)).iterator();
-    var total: usize = 0;
-    while (iter.nextCodepoint()) |cp| {
-        total += runeWidth(cp);
-    }
-    return total;
-}
-
 test "runeWidth basics" {
     try std.testing.expectEqual(@as(u2, 1), runeWidth('a'));
     try std.testing.expectEqual(@as(u2, 1), runeWidth('ö'));
@@ -247,11 +235,7 @@ test "runeWidth basics" {
     try std.testing.expectEqual(@as(u2, 1), runeWidth('█'));
 }
 
-test "strWidth and cellWidth" {
-    try std.testing.expectEqual(@as(usize, 5), try strWidth("hello"));
-    try std.testing.expectEqual(@as(usize, 4), try strWidth("中文"));
-    try std.testing.expectEqual(@as(usize, 7), try strWidth("abc中文")); // 3 + 4
-    try std.testing.expectEqual(@as(usize, 1), try strWidth("e\u{0301}")); // e + combining acute
+test "cellWidth and displayWidth" {
     try std.testing.expectEqual(@as(u2, 1), cellWidth('a'));
     try std.testing.expectEqual(@as(u2, 2), cellWidth('中'));
     try std.testing.expectEqual(@as(u2, 1), cellWidth('\u{0301}')); // a lone mark still fills its cell
