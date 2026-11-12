@@ -1538,11 +1538,10 @@ pub fn Scroll(comptime Widget: type) type {
             return if (size) |s| (if (s > reserve) s - reserve else 1) else null;
         }
 
-        fn clampOffsets(self: *Scroll(Widget), content: layout.Size, view_w: usize, view_h: usize) void {
-            const max_x: isize = if (content.width > view_w) @intCast(content.width - view_w) else 0;
-            const max_y: isize = if (content.height > view_h) @intCast(content.height - view_h) else 0;
-            self.x = std.math.clamp(self.x, 0, max_x);
-            self.y = std.math.clamp(self.y, 0, max_y);
+        // an unbounded axis has no viewport, so its offset is left alone
+        fn clampOffsets(self: *Scroll(Widget), content: layout.Size, view_w: ?usize, view_h: ?usize) void {
+            if (view_w) |w| self.x = std.math.clamp(self.x, 0, if (content.width > w) @as(isize, @intCast(content.width - w)) else 0);
+            if (view_h) |h| self.y = std.math.clamp(self.y, 0, if (content.height > h) @as(isize, @intCast(content.height - h)) else 0);
         }
 
         // the constraint to lay the child out under, shrinking the bounded axis
@@ -1615,7 +1614,7 @@ pub fn Scroll(comptime Widget: type) type {
                     const avail_h = constraint.max_size.height orelse child_grid.size.height;
                     const content_w = @max(1, if (self.options.fill) avail_w else @min(child_grid.size.width, avail_w));
                     const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
-                    self.clampOffsets(child_grid.size, content_w, content_h);
+                    self.clampOffsets(child_grid.size, constraint.max_size.width, constraint.max_size.height);
                     self.grid = try Grid.initFromGrid(allocator, child_grid, .{ .width = content_w, .height = content_h }, 0, 0);
                     self.viewport = .{ .width = content_w, .height = content_h };
                     self.content_size = child_grid.size;
@@ -1664,11 +1663,13 @@ pub fn Scroll(comptime Widget: type) type {
             if (self.child.getGrid()) |child_grid| {
                 const reserve_w = self.bar_w;
                 const reserve_h = self.bar_h;
-                const avail_w = subReserve(constraint.max_size.width, reserve_w) orelse child_grid.size.width;
-                const avail_h = subReserve(constraint.max_size.height, reserve_h) orelse child_grid.size.height;
+                const bound_w = subReserve(constraint.max_size.width, reserve_w);
+                const bound_h = subReserve(constraint.max_size.height, reserve_h);
+                const avail_w = bound_w orelse child_grid.size.width;
+                const avail_h = bound_h orelse child_grid.size.height;
                 const content_w = @max(1, if (self.options.fill) avail_w else @min(child_grid.size.width, avail_w));
                 const content_h = @max(1, if (self.options.fill) avail_h else @min(child_grid.size.height, avail_h));
-                self.clampOffsets(child_grid.size, content_w, content_h);
+                self.clampOffsets(child_grid.size, bound_w, bound_h);
 
                 var grid = try Grid.init(allocator, .{
                     .width = content_w + reserve_w,
