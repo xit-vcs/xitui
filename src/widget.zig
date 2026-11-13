@@ -573,11 +573,14 @@ pub const WrapKind = enum {
     none,
     // break lines anywhere; one codepoint past the edge wraps to the next row
     char,
-    // break lines at whitespace; a single token longer than the line falls
-    // back to char-wrapping just that token. a line's indentation is kept
-    // when its first word fits beside it
+    // break lines at whitespace and around wide runes; a token too long for
+    // a row fills the rest of the current one, then char-wraps. a line's
+    // indentation is kept when its first word fits beside it
     word,
 };
+
+// a tab advances to the next multiple of this many cells
+pub const tab_width = 4;
 
 pub const TextBoxOptions = struct {
     border: ?draw.Border,
@@ -585,6 +588,8 @@ pub const TextBoxOptions = struct {
     wrap_kind: WrapKind,
     // cells a word-wrapped line's continuation rows start in
     wrap_indent: usize = 0,
+    // the column tab stops are counted from
+    tab_start: usize = 0,
     // optional labels rendered over the top and bottom borders.
     top_label: Span = .{},
     bottom_label: Span = .{},
@@ -640,7 +645,7 @@ pub const TextBox = struct {
         spans: []const Span,
         options: TextBoxOptions,
     ) !TextBox {
-        var decoded = try decodeSpans(allocator, spans);
+        var decoded = try decodeSpans(allocator, spans, options.tab_start);
         errdefer {
             decoded.content.deinit(allocator);
             decoded.runs.deinit(allocator);
@@ -676,7 +681,7 @@ pub const TextBox = struct {
     }
 
     pub fn setSpans(self: *TextBox, allocator: std.mem.Allocator, spans: []const Span) !void {
-        const decoded = try decodeSpans(allocator, spans);
+        const decoded = try decodeSpans(allocator, spans, self.options.tab_start);
         self.content.deinit(allocator);
         self.runs.deinit(allocator);
         self.run_link_text.deinit(allocator);
@@ -839,17 +844,26 @@ pub const TextBox = struct {
         return c > ' ' and c < 0x7f and c != '<' and c != '>' and c != '"' and c != '`';
     }
 
-    fn decodeSpans(allocator: std.mem.Allocator, spans: []const Span) !struct { content: std.ArrayList(u21), runs: std.ArrayList(Run), run_link_text: std.ArrayList(u8) } {
+    // tabs become spaces up to the next tab stop
+    fn decodeSpans(allocator: std.mem.Allocator, spans: []const Span, tab_start: usize) !struct { content: std.ArrayList(u21), runs: std.ArrayList(Run), run_link_text: std.ArrayList(u8) } {
         var codepoints: std.ArrayList(u21) = .empty;
         errdefer codepoints.deinit(allocator);
         var runs: std.ArrayList(Run) = .empty;
         errdefer runs.deinit(allocator);
         var run_link_text: std.ArrayList(u8) = .empty;
         errdefer run_link_text.deinit(allocator);
+        var column: usize = 0;
         for (spans) |span| {
             var utf8 = (try std.unicode.Utf8View.init(span.text)).iterator();
             while (utf8.nextCodepoint()) |codepoint| {
+                if (codepoint == '\t') {
+                    const spaces = tab_width - (column -| tab_start) % tab_width;
+                    try codepoints.appendNTimes(allocator, ' ', spaces);
+                    column += spaces;
+                    continue;
+                }
                 try codepoints.append(allocator, codepoint);
+                column = if (codepoint == '\n') 0 else column + wth.cellWidth(codepoint);
             }
             const link = span.link orelse "";
             try runs.append(allocator, .{ .end = codepoints.items.len, .style = span.style, .link_start = run_link_text.items.len, .link_len = link.len });
@@ -906,10 +920,13 @@ fn wrapChars(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
 }
 
 fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, max_width: usize, wrap_indent: usize) !void {
+    // the row being filled: content [line_start, line_end) through its last word
     var line_start: usize = 0;
     var line_end: usize = 0;
     var line_width: usize = 0;
     var line_indent: usize = 0;
+    // whitespace after the row's last word, counted only if another word joins it
+    var gap: usize = 0;
     var i: usize = 0;
 
     while (i < content.len) {
@@ -921,16 +938,14 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
             line_end = i;
             line_width = 0;
             line_indent = 0;
+            gap = 0;
             continue;
         }
 
         if (codepoint == ' ' or codepoint == '\t') {
             // leading whitespace isn't skipped: line_start stays before it
             // until the line's first word decides whether to keep it
-            if (line_width > 0 and line_width < max_width) {
-                line_end = i + 1;
-                line_width += 1;
-            }
+            if (line_width > 0) gap += 1;
             i += 1;
             continue;
         }
@@ -940,7 +955,17 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
         while (i < content.len) : (i += 1) {
             const current = content[i];
             if (current == '\n' or current == ' ' or current == '\t') break;
-            word_width += wth.cellWidth(current);
+            // a wide rune is a word of its own, since the scripts that use
+            // them don't put spaces between words
+            const rune_width = wth.cellWidth(current);
+            if (rune_width == 2) {
+                if (i == word_start) {
+                    word_width = 2;
+                    i += 1;
+                }
+                break;
+            }
+            word_width += rune_width;
         }
         const word_end = i;
 
@@ -955,9 +980,9 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
             }
         }
 
-        if (line_width + word_width <= max_width) {
+        if (line_width + gap + word_width <= max_width) {
             line_end = word_end;
-            line_width += word_width;
+            line_width += gap + word_width;
         } else if (wrap_indent + word_width <= max_width) {
             try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width, .indent = line_indent });
             line_start = word_start;
@@ -965,28 +990,29 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
             line_width = wrap_indent + word_width;
             line_indent = wrap_indent;
         } else {
-            // a word too wide for a continuation row is split across rows,
-            // starting on a fresh row unless the current one is empty
-            if (line_width > 0) {
+            // a word too wide for a continuation row fills the rest of this
+            // row, then splits across continuation rows
+            if (line_width > 0 and line_width + gap + wth.cellWidth(content[word_start]) > max_width) {
                 try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width, .indent = line_indent });
+                line_start = word_start;
+                line_width = wrap_indent;
                 line_indent = wrap_indent;
+            } else {
+                line_width += gap;
             }
-            var segment_start = word_start;
-            var segment_width: usize = line_indent;
             for (content[word_start..word_end], word_start..) |current, index| {
                 const rune_width = wth.cellWidth(current);
-                if (segment_width > line_indent and segment_width + rune_width > max_width) {
-                    try lines.append(allocator, .{ .start = segment_start, .end = index, .width = segment_width, .indent = line_indent });
-                    segment_start = index;
-                    segment_width = wrap_indent;
+                if (line_width > line_indent and line_width + rune_width > max_width) {
+                    try lines.append(allocator, .{ .start = line_start, .end = index, .width = line_width, .indent = line_indent });
+                    line_start = index;
+                    line_width = wrap_indent;
                     line_indent = wrap_indent;
                 }
-                segment_width += rune_width;
+                line_width += rune_width;
             }
-            line_start = segment_start;
             line_end = word_end;
-            line_width = segment_width;
         }
+        gap = 0;
     }
 
     try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width, .indent = line_indent });
