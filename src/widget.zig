@@ -583,6 +583,8 @@ pub const TextBoxOptions = struct {
     border: ?draw.Border,
     round_corners: bool = false,
     wrap_kind: WrapKind,
+    // cells a word-wrapped line's continuation rows start in
+    wrap_indent: usize = 0,
     // optional labels rendered over the top and bottom borders.
     top_label: Span = .{},
     bottom_label: Span = .{},
@@ -694,7 +696,7 @@ pub const TextBox = struct {
         }
 
         const max_inner_width = if (constraint.max_size.width) |width| width - border_size * 2 else null;
-        try wrapLines(allocator, &self.lines, self.content.items, self.options.wrap_kind, max_inner_width);
+        try wrapLines(allocator, &self.lines, self.content.items, self.options.wrap_kind, max_inner_width, self.options.wrap_indent);
         // found here rather than when the content is set, since the last
         // grid borrows link_text until this build clears it
         try self.findLinks(allocator);
@@ -737,7 +739,7 @@ pub const TextBox = struct {
         var link_index: usize = 0;
         for (self.lines.items[0..visible_lines], 0..) |line, y| {
             const line_width = @max(1, @min(line.width, max_inner_width orelse line.width));
-            var x: usize = 0;
+            var x: usize = line.indent;
             for (self.content.items[line.start..line.end], line.start..) |codepoint, i| {
                 const rune_width = wth.cellWidth(codepoint);
                 if (x + rune_width > line_width) break;
@@ -857,22 +859,25 @@ pub const TextBox = struct {
     }
 };
 
-// a wrapped line: the content indices [start, end) and their display width
+// a wrapped line: the content indices [start, end), drawn `indent` cells in,
+// and their display width including the indent
 pub const Line = struct {
     start: usize,
     end: usize,
     width: usize,
+    indent: usize = 0,
 };
 
 // replace `lines` with `content` wrapped at `max_width`; unbounded when null,
-// where only newlines break
-pub fn wrapLines(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, kind: WrapKind, max_width: ?usize) !void {
+// where only newlines break. word wrapping starts continuation rows
+// `wrap_indent` cells in when that leaves room for content.
+pub fn wrapLines(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, kind: WrapKind, max_width: ?usize, wrap_indent: usize) !void {
     lines.clearRetainingCapacity();
     const width = max_width orelse return wrapChars(allocator, lines, content, null);
     switch (kind) {
         .none => try wrapChars(allocator, lines, content, null),
         .char => try wrapChars(allocator, lines, content, width),
-        .word => try wrapWords(allocator, lines, content, width),
+        .word => try wrapWords(allocator, lines, content, width, if (wrap_indent < width) wrap_indent else 0),
     }
 }
 
@@ -900,20 +905,22 @@ fn wrapChars(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
     try lines.append(allocator, .{ .start = start, .end = content.len, .width = width });
 }
 
-fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, max_width: usize) !void {
+fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content: []const u21, max_width: usize, wrap_indent: usize) !void {
     var line_start: usize = 0;
     var line_end: usize = 0;
     var line_width: usize = 0;
+    var line_indent: usize = 0;
     var i: usize = 0;
 
     while (i < content.len) {
         const codepoint = content[i];
         if (codepoint == '\n') {
-            try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+            try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width, .indent = line_indent });
             i += 1;
             line_start = i;
             line_end = i;
             line_width = 0;
+            line_indent = 0;
             continue;
         }
 
@@ -951,21 +958,28 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
         if (line_width + word_width <= max_width) {
             line_end = word_end;
             line_width += word_width;
-        } else if (word_width <= max_width) {
-            if (line_width > 0) try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+        } else if (wrap_indent + word_width <= max_width) {
+            try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width, .indent = line_indent });
             line_start = word_start;
             line_end = word_end;
-            line_width = word_width;
+            line_width = wrap_indent + word_width;
+            line_indent = wrap_indent;
         } else {
-            if (line_width > 0) try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+            // a word too wide for a continuation row is split across rows,
+            // starting on a fresh row unless the current one is empty
+            if (line_width > 0) {
+                try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width, .indent = line_indent });
+                line_indent = wrap_indent;
+            }
             var segment_start = word_start;
-            var segment_width: usize = 0;
+            var segment_width: usize = line_indent;
             for (content[word_start..word_end], word_start..) |current, index| {
                 const rune_width = wth.cellWidth(current);
-                if (segment_width > 0 and segment_width + rune_width > max_width) {
-                    try lines.append(allocator, .{ .start = segment_start, .end = index, .width = segment_width });
+                if (segment_width > line_indent and segment_width + rune_width > max_width) {
+                    try lines.append(allocator, .{ .start = segment_start, .end = index, .width = segment_width, .indent = line_indent });
                     segment_start = index;
-                    segment_width = 0;
+                    segment_width = wrap_indent;
+                    line_indent = wrap_indent;
                 }
                 segment_width += rune_width;
             }
@@ -975,7 +989,7 @@ fn wrapWords(allocator: std.mem.Allocator, lines: *std.ArrayList(Line), content:
         }
     }
 
-    try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width });
+    try lines.append(allocator, .{ .start = line_start, .end = line_end, .width = line_width, .indent = line_indent });
 }
 
 pub const TextInputOptions = struct {
